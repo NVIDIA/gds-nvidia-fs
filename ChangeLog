@@ -1,0 +1,45 @@
+nvidia-fs (2.3) RELEASED; urgency=low
+
+  * Add support for Scaleflux Block Devices
+
+ -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Mon, 02 Nov 2020
+
+nvidia-fs (2.2) RELEASED; urgency=low
+
+  * Minor bug fixes to improve resiliency and supportability
+
+ -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Fri, 02 Oct 2020
+
+nvidia-fs (2.1) RELEASED; urgency=low
+
+  * Minor bug fixes to improve resiliency and supportability
+
+ -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Sat, 06 June 2020
+
+nvidia-fs (2.0) RELEASED; urgency=low
+
+  * add dynamic NIC selection for distributed filesystems based on the GPU to NIC affinity
+
+  * add additional stats to track cross-root-port access and peer affinity stats
+
+  * add feature bits into vendor registration APIs to support backward compatibility
+
+  * clean up the registration function signature to handle callback feature bits
+
+  * add additional APIs for vendor callbacks nvfs_is_gpu_page, nvfs_gpu_index and nvfs_device_priority
+
+  * add additional error code to nvfs_dma_unmap_sg  NVFS_IO_ERR when nvidia-fs when called on GPU page with failed DMA mapping
+
+  * Minor bug fixes to improve resiliency and supportability
+
+ -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Mon, 27 April 2020
+
+nvidia-fs (1.0) RELEASED; urgency=low
+
+  * Alpha release with nvidia-fs kernel driver
+
+  * callback APIs and code for vendor registration and dma callbacks for blk and sg_lists
+
+  * NVMe and NVMe-oF patches for internal use on EXT4 filesystem
+
+ -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Thu, 29 August 2019
