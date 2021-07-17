@@ -1,20 +1,47 @@
+nvidia-fs (2.7) RELEASED; urgency=low
+
+ * Add read support for IBM GPFS using userspace RDMA DC transport 
+
+ --  Thu, 15 Jun 2021
+
+nvidia-fs (2.6) RELEASED; urgency=low
+
+  * NUMA-based pcie peer affinity computation
+
+  * Minor bug fixes to improve resiliency and supportability
+
+ --  Thu, 25 Feb 2021
+
+nvidia-fs (2.5) RELEASED; urgency=low
+
+  * Add support for Excelero Block Devices
+
+ --   Mon, 2 Feb 2021
+
+nvidia-fs (2.4) RELEASED; urgency=low
+
+  * Fix GDS hangs when process exits while the pages are mapped in rpcrdma
+    driver
+
+ --   Thu, 28 Jan 2021
+
 nvidia-fs (2.3) RELEASED; urgency=low
 
   * Add support for Scaleflux Block Devices
 
- -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Mon, 02 Nov 2020
+ -- Mon, 02 Nov 2020
 
 nvidia-fs (2.2) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Fri, 02 Oct 2020
+ -- Fri, 02 Oct 2020
 
 nvidia-fs (2.1) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Sat, 06 June 2020
+ -- Sat, 06 June 2020
 
 nvidia-fs (2.0) RELEASED; urgency=low
 
@@ -32,7 +59,7 @@ nvidia-fs (2.0) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Mon, 27 April 2020
+ -- Mon, 27 April 2020
 
 nvidia-fs (1.0) RELEASED; urgency=low
 
@@ -42,4 +69,4 @@ nvidia-fs (1.0) RELEASED; urgency=low
 
   * NVMe and NVMe-oF patches for internal use on EXT4 filesystem
 
- -- GPUDirect Storage Support <GPUDirectStorageSupportExt@nvidia.com>  Thu, 29 August 2019
+ -- Thu, 29 August 2019

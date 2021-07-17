@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -31,6 +31,7 @@
 #include "nvfs-pci.h"
 #include "nvfs-core.h"
 #include <linux/seq_file.h>
+#include <linux/topology.h>
 
 #define MAX_PCIE_BW_INDEX (PCIE_LNK_X32 * 5U)
 
@@ -422,6 +423,55 @@ error:
 }
 
 /*
+ *  Description : function to compute numa distance given a gpu_index
+ *  		  and an peer_index.
+ *  @params  : gpu_index
+ *  @params  : peer_index
+ *  @returns : numa distance on success or REMOTE_DISTANCE on error.
+ */
+
+static unsigned int __nvfs_gpu2peer_numa_distance(unsigned int gpu_index,
+		unsigned int peer_index) {
+	int na, nb;
+	na = nvfs_get_numa_node_from_pdevinfo(gpu_info_table[gpu_index]);
+	if (na < 0) {
+		nvfs_err("warning: error retrieving numa node for device "PCI_INFO_FMT,
+			PCI_INFO_ARGS(gpu_info_table[gpu_index]));
+	}
+
+	nb = nvfs_get_numa_node_from_pdevinfo(peer_info_table[peer_index]);
+	if (nb < 0) {
+		nvfs_err("warning: error retrieving numa node for device "PCI_INFO_FMT,
+			PCI_INFO_ARGS(peer_info_table[peer_index]));
+	}
+
+    // for systems which are not NUMA aware
+    if ((na < 0) && (nb < 0))
+        return LOCAL_DISTANCE;
+    // for buggy systems, where one has NUMA node set, other not
+    else if ((na < 0) || (nb < 0))
+        return REMOTE_DISTANCE;
+    else
+        return node_distance(na, nb);
+}
+
+/*
+ *  Description : check if gpu and peer pci device reside on the same local numa node
+ *                or at a distant numa node
+ *  @params  : gpu_index
+ *  @params  : peer_index
+ *  @returns : true if local or false for remote
+ */
+static bool nvfs_gpu2peer_islocal(unsigned int gpu_index,
+		unsigned int peer_index) {
+	if (__nvfs_gpu2peer_numa_distance(gpu_index, peer_index) ==
+		LOCAL_DISTANCE)
+		return true;
+	else
+		return false;
+}
+
+/*
  *  Description : core function to compute the pci distance given a gpu_index
  *  		  and an peer_index. (an index maps to a device bdf array slot)
  *  @params  : gpu_index
@@ -513,9 +563,12 @@ static unsigned int __nvfs_get_gpu2peer_distance(unsigned int gpu_index,
 	nvfs_dbg("==>i=%u/%u j=%u/%u\n", i, gdepth, j, pdepth);
 	#endif
 
-	if (!common)
-		pci_dist = (unsigned int)BASE_PCI_DISTANCE_CROSSRP + gdepth + pdepth + 1;
-	else {
+	if (!common) {
+		if (nvfs_gpu2peer_islocal(gpu_index, peer_index))
+			pci_dist = (unsigned int)BASE_PCI_DISTANCE_CROSSRP + gdepth + pdepth + 1;
+		else
+			pci_dist = (unsigned int)(2 * BASE_PCI_DISTANCE_CROSSRP) + gdepth + pdepth + 1;
+	} else {
 		i_max = i;
 		while (i >= 0 && j >= 0) {
 			if (gpu_bdf_map[gpu_index][i] == peer_bdf_map[peer_index][j]) {
@@ -755,7 +808,7 @@ void nvfs_reset_peer_affinity_stats(void) {
 int nvfs_peer_distance_show(struct seq_file *m, void *data) {
 	unsigned int i, j;
 
-	seq_printf(m, "gpu\t\tpeer\t\tpeerrank\tp2pdist\tlink\tgen\tnp2p\tclass\n");
+	seq_printf(m, "gpu\t\tpeer\t\tpeerrank\tp2pdist\tlink\tgen\tnuma\tnp2p\tclass\n");
 	for (i = 0; i < MAX_GPU_DEVS; i++) {
 		u64 pdevinfo = nvfs_lookup_gpu_hash_index_entry(i);
 		if (!pdevinfo)
@@ -765,13 +818,14 @@ int nvfs_peer_distance_show(struct seq_file *m, void *data) {
 			u64 peerinfo = nvfs_lookup_peer_hash_index_entry(j);
 			if (!peerinfo)
 				continue;
-			seq_printf(m, PCI_INFO_FMT"\t"PCI_INFO_FMT"\t0x%08x\t0x%04x\t0x%02x\t0x%02x\t%llu\t%s\n",
+			seq_printf(m, PCI_INFO_FMT"\t"PCI_INFO_FMT"\t0x%08x\t0x%04x\t0x%02x\t0x%02x\t0x%02x\t%llu\t%s\n",
 				PCI_INFO_ARGS(pdevinfo),
 				PCI_INFO_ARGS(peerinfo),
 				gpu_rank_matrix[i][j].rank,
 				gpu_rank_matrix[i][j].pci_dist,
 				nvfs_pdevinfo_get_link_width(peerinfo),
 				nvfs_pdevinfo_get_link_speed(peerinfo),
+				nvfs_get_numa_node_from_pdevinfo(peerinfo),
 				gpu_rank_matrix[i][j].count,
 				nvfs_pdevinfo_get_class_name(peerinfo));
 		}

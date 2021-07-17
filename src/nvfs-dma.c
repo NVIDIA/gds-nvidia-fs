@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -30,6 +30,7 @@
 #include "nvfs-mmap.h"
 #include "nvfs-dma.h"
 #include "nvfs-kernel-interface.h"
+#include "config-host.h"
 
 /*
  * This should be inline with kernel 5.3 nvme drivers. See driver/nvme/host/pci.c
@@ -51,13 +52,14 @@
 struct nvfs_dma_rw_ops nvfs_dev_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_nvme_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_sfxv_dma_rw_ops;
-
+struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops;
+struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops; 
 // nvfs symbol table
 struct module_entry modules_list[] = {
 	{
 		1,
 		0,
-		0,
+		NVFS_PROC_MOD_NVME_KEY,
 		0,
 		"nvme_v1_register_nvfs_dma_ops",
 		0,
@@ -69,7 +71,7 @@ struct module_entry modules_list[] = {
 	{
 		1,
 		0,
-		0,
+		NVFS_PROC_MOD_NVME_RDMA_KEY,
 		0,
 		"nvme_rdma_v1_register_nvfs_dma_ops",
 		0,
@@ -81,7 +83,7 @@ struct module_entry modules_list[] = {
 	{
 		1,
 		0,
-		0,
+		NVFS_PROC_MOD_SCALEFLUX_CSD_KEY,
 		0,
 		"sfxv_v1_register_nvfs_dma_ops",
 		0,
@@ -89,12 +91,24 @@ struct module_entry modules_list[] = {
 		0,
 		&nvfs_sfxv_dma_rw_ops
 	},
+	
+	{
+		1,
+		0,
+		NVFS_PROC_MOD_NVMESH_KEY,
+		0,
+		"nvmesh_v1_register_nvfs_dma_ops",
+		0,
+		"nvmesh_v1_unregister_nvfs_dma_ops",
+		0,
+		&nvfs_nvmesh_dma_rw_ops
+	},
 
 
 	{
 		1,
 		0,
-		0,
+		NVFS_PROC_MOD_DDN_LUSTRE_KEY,
 		0,
 		"lustre_v1_register_nvfs_dma_ops",
 		0,
@@ -115,12 +129,25 @@ struct module_entry modules_list[] = {
 		0,
 	        NULL
 	},
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT	
+	{
+		1,
+		0,
+		NVFS_PROC_MOD_GPFS_KEY,
+		0,
+		"ibm_scale_v1_register_nvfs_dma_ops",
+		0,
+		"ibm_scale_v1_unregister_nvfs_dma_ops",
+		0,
+		&nvfs_ibm_scale_rdma_ops
+	},
+#endif
 #endif
 
 	{
 		1,
 		0,
-		0,
+		NVFS_PROC_MOD_NFS_KEY,
 		0,
 		"rpcrdma_register_nvfs_dma_ops",
 		0,
@@ -186,8 +213,10 @@ static inline bool nvfs_blk_rq_check(struct request *req) {
 
 	// discards or copied pages
 	// We do not expect gpu request to be mingled with such requests
+	#ifdef HAVE_RQF_COPY_USER
 	if (unlikely((req->rq_flags & RQF_SPECIAL_PAYLOAD) || (req->rq_flags & RQF_COPY_USER)))
 		return false;
+	#endif
 
         // 1. different request types are not merged
 	// 2. only interested in read-write request
@@ -332,12 +361,14 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 				return NVFS_IO_ERR;
 			}
 
+#ifdef HAVE_DMA_DRAIN_IN_REQUEST_QUEUE
 			if (unlikely(q->dma_drain_size && q->dma_drain_needed(req))) {
 				CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 				nvfs_err("%s:%d cannot handle blk queue with drain segments\n",
 						__func__, __LINE__);
 				return NVFS_IO_ERR;
 			}
+#endif
 
 		}
 
@@ -413,6 +444,9 @@ new_segment:
 
 	if (found_gpu_page) {
 		sg_mark_end(sg); // marker for cases where alloted is more than used
+                if(nsegs > blk_rq_nr_phys_segments(req)) {
+                        req->nr_phys_segments = nsegs;
+                }
 		#ifdef CONFIG_DEBUG_NVFS_BLK
 		nvfs_print_sglist(iod_sglist, nsegs, req);
 		nvfs_dbg("detected gpu page\n");
@@ -637,16 +671,145 @@ static int nvfs_dma_map_sg_attrs(struct device *device,
 {
 	return nvfs_dma_map_sg_attrs_internal(device, sglist, nents, dma_dir, attrs, false);
 }
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
+				int nents,
+				struct nvfs_rdma_info *rdma_infop)
+{
+	struct scatterlist *sg = NULL;
+	struct page *page;
+	nvfs_mgroup_ptr_t nvfs_mgroup = NULL, prev_mgroup = NULL;
+	int i = 0, npages = 0;
+	uint64_t shadow_buf_size, total_size = 0;
+	struct nvfs_io* nvfsio = NULL;
+	
+	if(nents <= 0) {
+		
+		nvfs_info("%s: Wrong or none sglist entries passed %d\n"
+				, __func__, nents);
+		return NVFS_BAD_REQ;
+	}
 
+	page = sg_page(sglist);
+	if(page == NULL) {
+		nvfs_err("%s: NULL page passed, page number: %d", __func__, 0);
+		return NVFS_IO_ERR;
+	}
+	
+#ifdef NVFS_TEST_GPFS_CALLBACK
+	prev_mgroup = nvfs_mgroup_get((page->index >> NVFS_MAX_SHADOW_PAGES_ORDER));
+#else
+	prev_mgroup = nvfs_mgroup_from_page(page);
+#endif
+	if(prev_mgroup == NULL) {
+		nvfs_dbg("%s: mgroup NULL for page %d for addr 0x%p", __func__, 0, page);
+		return NVFS_BAD_REQ;
+	} else {
+                if(prev_mgroup->rdma_reg_info.curr.version == 0) {
+		        nvfs_err("%s: rdma version not set for page %d for addr 0x%p", __func__, 0, page);
+			nvfs_mgroup_put(prev_mgroup);	
+		        return NVFS_IO_ERR;
+                }
+		shadow_buf_size = (prev_mgroup->nvfs_pages_count) * PAGE_SIZE;
+		nvfsio = &prev_mgroup->nvfsio;
+	        memcpy(rdma_infop, &prev_mgroup->rdma_reg_info.curr, sizeof(*rdma_infop));
+		rdma_infop->rem_vaddr += nvfsio->rdma_seg_offset;
+		//rdma_infop->size -= nvfsio->rdma_seg_offset;
+		rdma_infop->size = (nvfsio->nvfs_active_pages_end - 
+				nvfsio->nvfs_active_pages_start + 1) * PAGE_SIZE;
+		if (rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) || 
+			       	rdma_infop->size < 0) {
+			nvfs_err("%s: wrong rdma_infop->size %d shadow buffer size %llu addr = 0x%llx\n \
+					seg_offset = %lu, rkey = %x, mgroup = %p\n",
+					__func__, rdma_infop->size, shadow_buf_size, rdma_infop->rem_vaddr, \
+					nvfsio->rdma_seg_offset, rdma_infop->rkey, prev_mgroup);
+			nvfs_mgroup_put(prev_mgroup);	
+			return NVFS_IO_ERR;
+		}
+		nvfs_dbg("%s: rdma_infop: vaddr = %llx size = %d, offset = %lu rkey = %x\n",
+				__func__,
+				rdma_infop->rem_vaddr,
+				rdma_infop->size,
+				nvfsio->rdma_seg_offset, rdma_infop->rkey);
+        }
+	
+	if(unlikely(IS_ERR(prev_mgroup))) {
+		nvfs_err("%s: mgroup internal error\n", __func__);
+		return NVFS_IO_ERR;
+	}
 
-#define SET_DEFAULT_OPS 					\
-	.ft_bmap 		      = NVIDIA_FS_SET_FT_ALL,	\
-	.nvfs_blk_rq_map_sg           = nvfs_blk_rq_map_sg,	\
-        .nvfs_dma_map_sg_attrs        = nvfs_dma_map_sg_attrs,	\
-        .nvfs_dma_unmap_sg            = nvfs_dma_unmap_sg,	\
-        .nvfs_is_gpu_page             = nvfs_is_gpu_page,	\
-        .nvfs_gpu_index               = nvfs_gpu_index,		\
-        .nvfs_device_priority         = nvfs_device_priority,	
+	shadow_buf_size = (prev_mgroup->nvfs_pages_count) * PAGE_SIZE;
+	nvfs_mgroup_put(prev_mgroup);	
+
+	for_each_sg(sglist, sg, nents, i) {
+		page = sg_page(sg);		
+	        npages = DIV_ROUND_UP(sg->length, PAGE_SIZE);
+
+		if(page == NULL) {
+			nvfs_dbg("%s: NULL page passed, page number: %d", __func__, i);
+	                memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_BAD_REQ;
+		}
+
+	//	printk("%s: page %p \n", __func__, page);
+#ifdef NVFS_TEST_GPFS_CALLBACK
+		nvfs_mgroup = nvfs_mgroup_get((page->index >> NVFS_MAX_SHADOW_PAGES_ORDER));
+#else
+		nvfs_mgroup = nvfs_mgroup_from_page_range(page, npages);
+#endif
+		if(nvfs_mgroup == NULL) {
+			nvfs_dbg("%s: mgroup NULL for page %d for addr 0x%p", __func__, i, page);
+	                memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_BAD_REQ;
+		}
+		
+		if(unlikely(IS_ERR(nvfs_mgroup))) {
+			nvfs_err("%s: mgroup internal error\n", __func__);
+	                memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_IO_ERR;
+		}
+	
+		if(prev_mgroup != nvfs_mgroup) {
+			nvfs_err("%s: Pages passed do not belong to same mgroup\n", __func__);
+			nvfs_mgroup_put(nvfs_mgroup);
+	                memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_IO_ERR;
+		}
+		prev_mgroup = nvfs_mgroup;
+		nvfs_mgroup_put(nvfs_mgroup);
+		total_size += sg->length;
+	}
+	if(total_size > shadow_buf_size) {
+		nvfs_err("%s: Size requested: %llu  more than shadow buf size: %llu\n", 
+				__func__, total_size, shadow_buf_size);
+	        memset(rdma_infop, 0, sizeof(*rdma_infop));
+		return NVFS_IO_ERR;
+	}
+	return nents;	
+}
+#endif
+
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+#define SET_DEFAULT_OPS                                         \
+	.ft_bmap                        = NVIDIA_FS_SET_FT_ALL, \
+	.nvfs_blk_rq_map_sg             = nvfs_blk_rq_map_sg,   \
+	.nvfs_dma_map_sg_attrs          = nvfs_dma_map_sg_attrs,        \
+	.nvfs_dma_unmap_sg              = nvfs_dma_unmap_sg,    \
+	.nvfs_is_gpu_page               = nvfs_is_gpu_page,     \
+	.nvfs_gpu_index                 = nvfs_gpu_index,               \
+	.nvfs_device_priority           = nvfs_device_priority, \
+	.nvfs_get_gpu_sglist_rdma_info  = nvfs_get_gpu_sglist_rdma_info,
+#else
+#define SET_DEFAULT_OPS                                         \
+	.ft_bmap                        = NVIDIA_FS_SET_FT_ALL, \
+	.nvfs_blk_rq_map_sg             = nvfs_blk_rq_map_sg,   \
+	.nvfs_dma_map_sg_attrs          = nvfs_dma_map_sg_attrs,        \
+	.nvfs_dma_unmap_sg              = nvfs_dma_unmap_sg,    \
+	.nvfs_is_gpu_page               = nvfs_is_gpu_page,     \
+	.nvfs_gpu_index                 = nvfs_gpu_index,               \
+	.nvfs_device_priority           = nvfs_device_priority, 
+#endif
+
 
 struct nvfs_dma_rw_ops nvfs_dev_dma_rw_ops = {
 	SET_DEFAULT_OPS
@@ -663,3 +826,15 @@ struct nvfs_dma_rw_ops nvfs_sfxv_dma_rw_ops = {
 	.nvfs_blk_rq_map_sg	= nvfs_nvme_blk_rq_map_sg,
 	.nvfs_dma_map_sg_attrs  = nvfs_dma_map_sg_attrs_nvme,
 };
+
+struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops = {
+	SET_DEFAULT_OPS
+	.nvfs_blk_rq_map_sg	= nvfs_nvme_blk_rq_map_sg,
+	.nvfs_dma_map_sg_attrs  = nvfs_dma_map_sg_attrs_nvme,
+};
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops = {
+	SET_DEFAULT_OPS
+	.nvfs_get_gpu_sglist_rdma_info = nvfs_get_gpu_sglist_rdma_info,
+};
+#endif

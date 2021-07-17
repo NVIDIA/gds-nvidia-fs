@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -34,7 +34,7 @@ ccflags-y += -Wall
 ccflags-y += -I$(NVIDIA_SRC_DIR)
 
 ccflags-y += -I/usr/lib/gcc/x86_64-linux-gnu/7/include/
-nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o
+nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o nvfs-rdma.o nvfs-p2p.o
 nvidia-fs-$(CONFIG_NVFS_STATS) += nvfs-stat.o
 nvidia-fs-$(CONFIG_FAULT_INJECTION) += nvfs-fault.o
 GDS_VERSION ?= $(shell cat GDS_VERSION)
@@ -42,6 +42,10 @@ NVFS_MODULE_FLAGS = -DCONFIG_NVFS_STATS=y -DGDS_VERSION=$(GDS_VERSION)
 # Enable to debug issues with decrementing counters
 #NVFS_MODULE_FLAGS = -DCONFIG_NVFS_STATS=y -DCONFIG_NVFS_DEBUG_STATS=y
 
+#By default we will enable kernel rdma support
+ifneq ($(CONFIG_DISABLE_NVFS_KERN_RDMA_SUPPORT),1)
+        NVFS_MODULE_FLAGS += -DNVFS_ENABLE_KERN_RDMA_SUPPORT
+endif
 
 
 # **************************************
@@ -83,8 +87,9 @@ REL_MINOR  := $(word 3,$(REL))
 #endif
 
 ifneq ($(CONFIG_MOFED_VERSION),)
-MOFED_PATH := /usr/src/mlnx-ofed-kernel-$(CONFIG_MOFED_VERSION)/
-ccflags-y += -I $(MOFED_PATH)/include
+MOFED_PATH_UBUNTU := /usr/src/mlnx-ofa_kernel-$(CONFIG_MOFED_VERSION)/
+MOFED_PATH_RHEL := /usr/src/mlnx-ofed-kernel-$(CONFIG_MOFED_VERSION)/
+ccflags-y += -I $(MOFED_PATH_UBUNTU)/include -I $(MOFED_PATH_RHEL)/include
 nvidia-fs-y += nvfs-peer.o
 NVFS_MODULE_FLAGS +=  -DCONFIG_MOFED=y
 MOFED_SYMBOLS := mofed_symbols
@@ -97,7 +102,8 @@ nv_configure:
 
 mofed_symbols:
 	@ echo copying MOFED symvers
-	@ cp -rf $(MOFED_PATH)/Module.symvers ./ || true
+	@ cp -rf $(MOFED_PATH_UBUNTU)/Module.symvers ./ || true
+	@ cp -rf $(MOFED_PATH_RHEL)/Module.symvers ./ || true
 
 nv_symbols:
 	@ echo "Picking NVIDIA driver sources from NVIDIA_SRC_DIR=$(NVIDIA_SRC_DIR). If that does not meet your expectation, you might have a stale driver still around and that might cause problems."

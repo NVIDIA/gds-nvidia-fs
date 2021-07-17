@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -33,6 +33,12 @@
 
 #define MAX_PCI_BUCKETS 32
 #define MAX_PCI_BUCKETS_BITS ilog2(MAX_PCI_BUCKETS)
+/*
+ * The following macro defines the number of RDMA Registrations supported today.
+ * This macro's value should be the same as the macro defined by the same name 
+ * in user space defined in lib/nvfs/nvfs.h.
+ */
+#define MAX_RDMA_REGS_SUPPORTED 16
 
 struct nvfs_gpu_args;
 
@@ -99,6 +105,8 @@ struct nvfs_io {
         wait_queue_head_t rw_wq;        // wait queue for serializing parallel dma req
         struct kiocb common;		// kiocb structure used for read/write operation
 	ktime_t start_io;		// Start time of IO for latency calculation
+	ssize_t rdma_seg_offset;	// Start offset for the rdma segment
+	bool 	use_rkeys;		// Is set, use rkeys for IO
 };
 
 struct pci_dev_mapping {
@@ -129,8 +137,63 @@ struct nvfs_io_metadata {
 	struct page *page;
 } __attribute__((packed, aligned(8)));
 
+typedef struct nvfs_rdma_info  
+{  
+	uint8_t    version;   // to support future changes to structure
+	uint8_t    flags;     // if bit 0 != 0, then gid field is valid                                                   
+	uint16_t   lid;       // subnet local identifier of the client node port
+	uint32_t   qp_num;    // QP number of DCT on the client node
+
+	// client shadow buffer (client GPU buffer) info used to set up 
+	// RDMA on GPFS server
+	uint64_t  rem_vaddr;   // address    
+	uint32_t  size;        // length    
+	uint32_t  rkey;        // rkey 
+	// client information used to set up RDMA on GPFS server  
+	uint64_t  gid[2];      // 16-byte global identifier of the client node port  
+	uint32_t  dc_key;
+} nvfs_rdma_info_t;
+
+/*
+struct nvfs_rdma_info  {  
+	 // client information used to set up RDMA on GPFS server  
+	uint64_t  	gid[2];      // 16-byte global identifier of the client node (port)  
+	uint64_t   	rem_vaddr;   // address
+	uint32_t       	qp_num; // QP number of DCT on the client node
+	uint32_t   	size;        // length    
+	uint32_t   	rkey;        // rkey 
+	uint16_t       	lid;   // subnet local identifier of the client node (port)
+	uint8_t       	flags;  // bit 0 != 0, then gid field is valid 
+	uint8_t   	version;    // version to support future changes to structure
+} __attribute__((packed, aligned(8)));
+*/
+
+struct nvfs_rdma_device_info {
+	uint64_t  	gid[2];      // 16-byte global identifier of the client node (port)  
+	uint32_t       	qp_num; // QP number of DCT on the client node
+	uint16_t       	lid;   // subnet local identifier of the client node (port)
+	uint8_t       	flags;  // bit 0 != 0, then gid field is valid 
+	uint8_t   	version;    // version to support future changes to structure
+	uint32_t	dc_key;
+} __attribute__((packed, aligned(8)));
+
+struct nvfs_rdma_mem_info {
+	uint64_t   	rem_vaddr;   // address
+	uint32_t   	size;        // length    
+	uint32_t   	rkey;        // rkey 
+} __attribute__((packed, aligned(8)));
+
+struct nvfs_rdma_reg_info {
+	struct nvfs_rdma_info 	     curr;
+	struct nvfs_rdma_device_info rdma_device_info;
+	struct nvfs_rdma_mem_info    rdma_mem_info[MAX_RDMA_REGS_SUPPORTED];
+	uint32_t 		     nents;
+	uint32_t 		     curr_ent;
+} __attribute__((packed, aligned(8)));
+
 struct nvfs_io_mgroup {
         atomic_t ref;
+        atomic_t dma_ref;
         struct hlist_node hash_link;
 	u64 cpu_base_vaddr;
         unsigned long base_index;
@@ -139,6 +202,9 @@ struct nvfs_io_mgroup {
         struct nvfs_io_metadata *nvfs_metadata;
 	struct nvfs_gpu_args gpu_info;
 	struct nvfs_io nvfsio;
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+	struct nvfs_rdma_reg_info rdma_reg_info;
+#endif
 	atomic_t next_segment;
 #ifdef CONFIG_FAULT_INJECTION
 	bool fault_injected;
@@ -152,8 +218,9 @@ void nvfs_mgroup_init(void);
 int nvfs_mgroup_mmap(struct file *filp, struct vm_area_struct *vma);
 nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index);
 void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup);
-int nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_page_state state, bool validate);
+void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_page_state state, bool validate, bool update_nvfsio);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page(struct page* page);
+nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int npages);
 bool nvfs_is_gpu_page(struct page *page);
 unsigned int nvfs_gpu_index(struct page *page);
 int nvfs_check_gpu_page_and_error(struct page *page);

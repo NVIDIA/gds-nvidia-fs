@@ -18,29 +18,24 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
+ *
+ *
  */
-#ifndef __NVFS_DRIVER_VERSION_H_
-#define __NVFS_DRIVER_VERSION_H_
+#ifndef NVFS_RDMA_H
+#define NVFS_RDMA_H
 
-/* please update the driver version here and also the debian change log*/
+#include "nvfs-core.h"
 
-#define NVFS_DRIVER_MAJOR_VERSION   2U //2-bytes
+void nvfs_set_curr_rdma_seg_to_mgroup(
+		nvfs_mgroup_ptr_t nvfs_mgroup, int rdma_segment);
 
-#define NVFS_DRIVER_MINOR_VERSION   7U //2-bytes
+int nvfs_set_rdma_reg_info_to_mgroup(
+		nvfs_ioctl_set_rdma_reg_info_args_t* rdma_reg_info_args);
 
-// template for build version
-#define NVFS_DRIVER_PATCH_VERSION  49U
 
-static inline unsigned int nvfs_driver_version(void) {
-    return (NVFS_DRIVER_MAJOR_VERSION << 16) | NVFS_DRIVER_MINOR_VERSION;
-}
+int nvfs_get_rdma_reg_info_from_mgroup(
+		nvfs_ioctl_get_rdma_reg_info_args_t* rdma_reg_info_args);
 
-static inline unsigned short nvfs_major_version(unsigned int version) {
-    return (version >> 16);
-}
-
-static inline unsigned short nvfs_minor_version(unsigned int version) {
-    return (unsigned short) version;
-}
-
+int nvfs_clear_rdma_reg_info_in_mgroup(
+		nvfs_ioctl_clear_rdma_reg_info_args_t* rdma_clear_info_args);
 #endif

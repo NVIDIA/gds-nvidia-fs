@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
 #include <linux/module.h>
 
 #include "nvfs-dma.h"
+#include "config-host.h"
 
 //exported symbol by kernel module.c
 extern struct mutex module_mutex;
@@ -36,10 +37,7 @@ extern struct module_entry modules_list[];
 int probe_module_list(void) {
 	int i, ret = 0;
 	struct module_entry *mod_entry;
-
 	for (i = 0; i < nr_modules(); i++) {
-		struct module *mod = NULL;
-
 		mod_entry = &modules_list[i];
 
                 //skip pseudo module dependencies
@@ -51,18 +49,10 @@ int probe_module_list(void) {
 
 		mutex_lock(&module_mutex);
 
-		if (!find_symbol(mod_entry->reg_ksym, &mod, NULL, true, false)) {
-			mutex_unlock(&module_mutex);
-			continue;
-		}
-
 		mod_entry->reg_func = __symbol_get(mod_entry->reg_ksym);
-		// This must suceed because of find symbol.
 		if (!mod_entry->reg_func) {
 			mutex_unlock(&module_mutex);
-			ret = -ENOENT;
-			pr_err("bug, register funtion not found %s", mod_entry->reg_ksym);
-			break;
+			continue;
 		}
 
 		mod_entry->dreg_func = __symbol_get(mod_entry->dreg_ksym);
@@ -70,10 +60,10 @@ int probe_module_list(void) {
 		if (!mod_entry->dreg_func) {
 			__symbol_put(mod_entry->reg_ksym);
 			mutex_unlock(&module_mutex);
-			ret = -ENOENT;
 			mod_entry->reg_func = NULL;
+			mod_entry->found = false;
 			pr_err("deregister funtion not found %s", mod_entry->dreg_ksym);
-			break;
+			continue;
 		}
 
 		mutex_unlock(&module_mutex);
@@ -99,15 +89,6 @@ int probe_module_list(void) {
 		}
 
 		mod_entry->found = true;
-		if (mod) {
-			if (!mod_entry->is_mod)
-				pr_warn("%s:symbol found in module\n", __func__);
-			mod_entry->name = mod->name;
-			if (mod->version)
-				mod_entry->version = (char *)mod->version;
-			else
-				mod_entry->version = "";
-		}
 		pr_debug("registering :%s\n", mod_entry->reg_ksym);
 	}
 	return ret;
@@ -145,8 +126,6 @@ void cleanup_module_list(void) {
 			if (!mod_entry->is_mod)
 				continue;
 
-			mod_entry->name = NULL;
-			mod_entry->version = NULL;
 		}
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -74,6 +74,7 @@ extern int nvfs_info_enabled;
 #define nvfs_err(FMT, ARGS...)                               \
     nvfs_msg(KERN_ERR, FMT, ## ARGS)
 
+extern int nvfs_rw_stats_enabled;
 extern int nvfs_peer_stats_enabled;
 
 typedef unsigned long long u64;
@@ -113,18 +114,51 @@ struct nvfs_ioctl_ioargs {
     uint8_t sync:1;		// perform sync IO
     uint8_t hipri:1;		// set hipri flag in IO path
     uint8_t allowreads:1;	// allow reads for O_WRONLY
-    uint8_t reserved:5;		// reserved for future
+    uint8_t use_rkeys:1;	// use RDMA rkey for IO 
+    uint8_t reserved:4;		// reserved for future
     u8 padding[3];              // padding
 } __attribute__((packed, aligned(8)));
 typedef struct nvfs_ioctl_ioargs nvfs_ioctl_ioargs_t;
 
+
+struct nvfs_ioctl_set_rdma_reg_info_args {
+	uint64_t 	cpuvaddr;
+	uint64_t  	gid[2];
+	uint32_t  	qp_num;
+	uint16_t  	lid;
+	uint8_t   	flags;
+	uint8_t	  	version;
+	uint32_t	dc_key;
+	uint32_t 	rkey[MAX_RDMA_REGS_SUPPORTED];
+	uint32_t	nkeys;
+} __attribute__((packed, aligned(8)));
+typedef struct nvfs_ioctl_set_rdma_reg_info_args nvfs_ioctl_set_rdma_reg_info_args_t;
+
+struct nvfs_ioctl_get_rdma_reg_info_args {
+	uint64_t 		cpuvaddr;
+	uint64_t		gpu_buf_offset;
+	struct nvfs_rdma_info 	nvfs_rdma_info;
+} __attribute__((packed, aligned(8)));
+typedef struct nvfs_ioctl_get_rdma_reg_info_args nvfs_ioctl_get_rdma_reg_info_args_t;
+
+struct nvfs_ioctl_clear_rdma_reg_info_args {
+	uint64_t cpuvaddr;
+} __attribute__((packed, aligned(8)));
+typedef struct nvfs_ioctl_clear_rdma_reg_info_args nvfs_ioctl_clear_rdma_reg_info_args_t;
+
 union nvfs_ioctl_param_u {
     nvfs_ioctl_map_t map_args;	  // Map
     nvfs_ioctl_ioargs_t ioargs;   // Read/Write
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+    nvfs_ioctl_set_rdma_reg_info_args_t rdma_set_reg_info; //Set RDMA reg info in kernel(mgroup)
+    nvfs_ioctl_get_rdma_reg_info_args_t rdma_get_reg_info; //Get RDMA reg info from kernel(mgroup)
+    nvfs_ioctl_clear_rdma_reg_info_args_t rdma_clear_reg_info; //Clear RDMA reg info in the kernel
+#endif
 } __attribute__((packed, aligned(8)));
 typedef union nvfs_ioctl_param_u nvfs_ioctl_param_union;
 
 // worst case scenario is every alternate page is a HOLE,
+// 768 = (4096-1024)/sizeof(nvfs_io_hole)
 // so NVFS_MAX_HOLE_REGIONS can cover an IO of NVFS_MAX_HOLE_REGIONS * 2 * 4K
 // for 768 it will be 6MB
 #define NVFS_MAX_HOLE_REGIONS 768
@@ -164,10 +198,14 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 #define NVFS_START_MAGIC	0xabc0cba1abc2cba3ULL
 #define NVFS_END_MAGIC		0x3abc2cba1abc0cbaULL
 
-#define NVFS_IOCTL_REMOVE    _IOW(NVFS_MAGIC, 1, int)
-#define NVFS_IOCTL_READ    _IOW(NVFS_MAGIC, 2, int)
-#define NVFS_IOCTL_MAP    _IOW(NVFS_MAGIC, 3, int)
-#define NVFS_IOCTL_WRITE    _IOW(NVFS_MAGIC, 4, int)
+#define NVFS_IOCTL_REMOVE    		_IOW(NVFS_MAGIC, 1, int)
+#define NVFS_IOCTL_READ    		_IOW(NVFS_MAGIC, 2, int)
+#define NVFS_IOCTL_MAP    		_IOW(NVFS_MAGIC, 3, int)
+#define NVFS_IOCTL_WRITE    		_IOW(NVFS_MAGIC, 4, int)
+
+#define NVFS_IOCTL_SET_RDMA_REG_INFO	_IOW(NVFS_MAGIC, 5, int)
+#define NVFS_IOCTL_GET_RDMA_REG_INFO	_IOW(NVFS_MAGIC, 6, int)
+#define NVFS_IOCTL_CLEAR_RDMA_REG_INFO	_IOW(NVFS_MAGIC, 7, int)
 
 #define PAGE_PER_GPU_PAGE_SHIFT  4
 #define GPU_PAGE_SHIFT   16

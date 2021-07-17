@@ -19,7 +19,7 @@ GDS documents and online resources provide additional context for the optimal us
 ## Requirements
  - NVIDIA Tesla or Quadro class GPUs based on Pascal, Volta, Turing or Ampere
  - NVMe/NVMeOF storage devices or supported distributed filesystem
- - Linux kernel above 4.15.0.x
+ - Linux kernel between 4.15.0.x and 5.4.0.x
  - MOFED 5.1 or above
  - cuda toolkit 10.0 and above
  - GPU display driver >= 418.40
@@ -28,7 +28,7 @@ GDS documents and online resources provide additional context for the optimal us
 
 ```shell
  $ cd src
- $ export CONFIG_MOFED_VERSION = $(shell ofed_info -s | cut -d '-' -f 2)
+ $ export CONFIG_MOFED_VERSION=$(ofed_info -s | cut -d '-' -f 2)
  $ sudo make
  $ sudo insmod nvidia-fs.ko
 ```

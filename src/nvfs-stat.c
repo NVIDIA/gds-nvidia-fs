@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -30,8 +30,8 @@
 #include "nvfs-stat.h"
 #include "nvfs-core.h"
 #include "nvfs-pci.h"
+#include "config-host.h"
 #include <linux/version.h>
-
 static DEFINE_HASHTABLE(nvfs_gpu_stat_hash, NVFS_MAX_GPU_BITS);
 static spinlock_t lock ____cacheline_aligned;
 
@@ -85,6 +85,7 @@ atomic_t nvfs_n_op_process;
 atomic_t nvfs_n_err_mix_cpu_gpu;
 atomic_t nvfs_n_err_sg_err;
 atomic_t nvfs_n_err_dma_map;
+atomic_t nvfs_n_err_dma_ref;
 
 atomic_t prev_read_throughput;
 atomic_t prev_write_throughput;
@@ -106,7 +107,7 @@ static void nvfs_print_gpuinfo(struct seq_file *m)
 	hash_for_each_rcu(nvfs_gpu_stat_hash, temp, gpustat, hash_link)
 	{
         seq_printf(m, "GPU "PCI_INFO_FMT" uuid:%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x : "
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+#ifdef HAVE_ATOMIC64_LONG
                 "Registered_MiB=%lu Cache_MiB=%lu max_pinned_MiB=%lu ",
 #else
                 "Registered_MiB=%llu Cache_MiB=%llu max_pinned_MiB=%llu ",
@@ -142,12 +143,25 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 #undef GDS_STRING2
 #undef GDS_STRING
 #endif
-    seq_printf(m, "NVFS statistics(ver: %d.0)\n", NVFS_STAT_VERSION);
-	seq_printf(m, "NVFS Driver(version: %u:%u:%u)\n\n",
+        seq_printf(m, "NVFS statistics(ver: %d.0)\n", NVFS_STAT_VERSION);
+	seq_printf(m, "NVFS Driver(version: %u.%u.%u)\n",
 			nvfs_major_version(nvfs_driver_version()),
 			nvfs_minor_version(nvfs_driver_version()),
 			NVFS_DRIVER_PATCH_VERSION);
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+        seq_printf(m, "Mellanox PeerDirect Supported: %s\n",
+#ifdef CONFIG_MOFED
+        "True");
+#else
+        "False");
+#endif
+        seq_printf(m, "IO stats: %s, peer IO stats: %s\n",
+                   nvfs_rw_stats_enabled ? "Enabled" : "Disabled",
+                   nvfs_peer_stats_enabled ? "Enabled" : "Disabled");
+
+        seq_printf(m, "Logging level: %s\n\n",
+                   (nvfs_dbg_enabled ? "debug" : (nvfs_info_enabled ? "info" : "warn")));
+
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Active Shadow-Buffer (MiB): %lu\n",
 #else
 	seq_printf(m, "Active Shadow-Buffer (MiB): %llu\n",
@@ -155,7 +169,9 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    BYTES_TO_MB(atomic64_read(&nvfs_n_active_shadow_buf_sz)));
 	seq_printf(m, "Active Process: %u\n", atomic_read(&nvfs_n_op_process) / nvfs_get_device_count());
 
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+
+        if (nvfs_rw_stats_enabled) {
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Reads				: n=%lu ok=%lu err=%u readMiB=%lu io_state_err=%u\n",
 #else
 	seq_printf(m, "Reads				: n=%llu ok=%llu err=%u readMiB=%llu io_state_err=%u\n",
@@ -169,8 +185,13 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	seq_printf(m, "Reads				: Bandwidth(MiB/s)=%u Avg-Latency(usec)=%u\n",
 	    atomic_read(&nvfs_read_throughput),
 	    atomic_read(&nvfs_avg_read_latency));
+        } else {
+	seq_printf(m, "Reads				: err=%u io_state_err=%u\n",
+	    atomic_read(&nvfs_n_read_err),
+	    atomic_read(&nvfs_n_read_iostate_err));
+        }
 
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Sparse Reads		        : n=%lu io=%lu holes=%lu pages=%lu \n",
 #else
 	seq_printf(m, "Sparse Reads		        : n=%llu io=%llu holes=%llu pages=%llu \n",
@@ -180,7 +201,8 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    atomic64_read(&nvfs_n_reads_sparse_region),
 	    atomic64_read(&nvfs_n_reads_sparse_pages));
 
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+        if (nvfs_rw_stats_enabled) {
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Writes				: n=%lu ok=%lu err=%u writeMiB=%lu io_state_err=%u pg-cache=%u pg-cache-fail=%u pg-cache-eio=%u\n",
 #else
 	seq_printf(m, "Writes				: n=%llu ok=%llu err=%u writeMiB=%llu io_state_err=%u pg-cache=%u pg-cache-fail=%u pg-cache-eio=%u\n",
@@ -197,8 +219,16 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	seq_printf(m, "Writes				: Bandwidth(MiB/s)=%u Avg-Latency(usec)=%u\n",
 	    atomic_read(&nvfs_write_throughput),
 	    atomic_read(&nvfs_avg_write_latency));
+        } else {
+	seq_printf(m, "Writes				: err=%u io_state_err=%u pg-cache=%u pg-cache-fail=%u pg-cache-eio=%u\n",
+	    atomic_read(&nvfs_n_write_err),
+	    atomic_read(&nvfs_n_write_iostate_err),
+	    atomic_read(&nvfs_n_pg_cache),
+	    atomic_read(&nvfs_n_pg_cache_fail),
+	    atomic_read(&nvfs_n_pg_cache_eio));
+        }
 
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Mmap				: n=%lu ok=%lu err=%u munmap=%lu\n",
 #else
 	seq_printf(m, "Mmap				: n=%llu ok=%llu err=%u munmap=%llu\n",
@@ -208,7 +238,7 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    atomic_read(&nvfs_n_mmap_err),
 	    atomic64_read(&nvfs_n_munmap));
 
-#if LINUX_VERSION_CODE <  KERNEL_VERSION(5,0,0)
+#ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Bar1-map			: n=%lu ok=%lu err=%u free=%lu callbacks=%u active=%u\n",
 #else
 	seq_printf(m, "Bar1-map			: n=%llu ok=%llu err=%u free=%llu callbacks=%u active=%u\n",
@@ -220,10 +250,11 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    atomic_read(&nvfs_n_callbacks),
 	    atomic_read(&nvfs_n_op_maps));
 
-	seq_printf(m, "Error				: cpu-gpu-pages=%u sg-ext=%u dma-map=%u\n",
+	seq_printf(m, "Error				: cpu-gpu-pages=%u sg-ext=%u dma-map=%u dma-ref=%u\n",
 		atomic_read(&nvfs_n_err_mix_cpu_gpu),
 		atomic_read(&nvfs_n_err_sg_err),
-		atomic_read(&nvfs_n_err_dma_map));
+		atomic_read(&nvfs_n_err_dma_map),
+		atomic_read(&nvfs_n_err_dma_ref));
 
         seq_printf(m, "Ops				: Read=%u Write=%u\n",
 	    atomic_read(&nvfs_n_op_reads),
@@ -272,6 +303,7 @@ static int nvfs_stats_reset(void) {
 	nvfs_stat_reset(&nvfs_n_err_mix_cpu_gpu);
 	nvfs_stat_reset(&nvfs_n_err_sg_err);
 	nvfs_stat_reset(&nvfs_n_err_dma_map);
+	nvfs_stat_reset(&nvfs_n_err_dma_ref);
 
 	nvfs_stat64_reset(&nvfs_n_maps);
 	nvfs_stat64_reset(&nvfs_n_maps_ok);
@@ -284,6 +316,10 @@ static int nvfs_stats_reset(void) {
 
 	nvfs_stat64_reset(&nvfs_read_latency_per_sec);
 	nvfs_stat64_reset(&nvfs_write_latency_per_sec);
+
+	nvfs_stat_reset(&nvfs_n_pg_cache);
+	nvfs_stat_reset(&nvfs_n_pg_cache_fail);
+	nvfs_stat_reset(&nvfs_n_pg_cache_eio);
 
 	nvfs_reset_peer_affinity_stats();
 	return 0;
@@ -510,6 +546,15 @@ static ssize_t nvfs_stats_clear(struct file *file, const char __user *buf, size_
 	return (ssize_t) size;
 }
 
+#ifdef HAVE_STRUCT_PROC_OPS
+const struct proc_ops nvfs_stats_fops = {
+        .proc_open  	= nvfs_stats_open,
+        .proc_read     	= seq_read,
+        .proc_write    	= nvfs_stats_clear,
+        .proc_lseek    	= seq_lseek,
+        .proc_release	= single_release,
+};
+#else
 const struct file_operations nvfs_stats_fops = {
         .open           = nvfs_stats_open,
         .read           = seq_read,
@@ -517,3 +562,4 @@ const struct file_operations nvfs_stats_fops = {
         .llseek         = seq_lseek,
         .release        = single_release,
 };
+#endif

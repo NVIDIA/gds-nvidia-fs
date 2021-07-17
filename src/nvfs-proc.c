@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -33,6 +33,7 @@
 #include "nvfs-stat.h"
 #include "nvfs-dma.h"
 #include "nvfs-pci.h"
+#include "config-host.h"
 
 extern struct module_entry modules_list[];
 extern struct mutex nvfs_module_mutex;
@@ -61,14 +62,23 @@ static int nvfs_modules_open(struct inode *inode, struct file *file)
 {
        return single_open(file, nvfs_modules_show, NULL);
 }
-
+#ifdef HAVE_STRUCT_PROC_OPS
+const struct proc_ops nvfs_module_ops = {
+       .proc_open    	= nvfs_modules_open,
+       .proc_read 	= seq_read,
+       .proc_lseek	= seq_lseek,
+       .proc_release	= single_release,
+};
+#else
 const struct file_operations nvfs_module_ops = {
+
        .owner          = THIS_MODULE,
        .open           = nvfs_modules_open,
        .read           = seq_read,
        .llseek         = seq_lseek,
        .release        = single_release,
 };
+#endif
 
 // used by library for parsing
 static int nvfs_version_show(struct seq_file *m, void *v)
@@ -87,6 +97,14 @@ static int nvfs_version_info_open(struct inode *inode, struct file *file)
 	return single_open(file, nvfs_version_show, NULL);
 }
 
+#ifdef HAVE_STRUCT_PROC_OPS
+const struct proc_ops nvfs_version_ops = {
+	.proc_open	= nvfs_version_info_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations nvfs_version_ops = {
 	.owner		= THIS_MODULE,
 	.open		= nvfs_version_info_open,
@@ -94,7 +112,7 @@ static const struct file_operations nvfs_version_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
-
+#endif	
 // used by library for parsing
 static int nvfs_bridge_show(struct seq_file *m, void *v)
 {
@@ -117,6 +135,14 @@ static int nvfs_bridge_info_open(struct inode *inode, struct file *file)
 	return single_open(file, nvfs_bridge_show, NULL);
 }
 
+#ifdef HAVE_STRUCT_PROC_OPS
+static const struct proc_ops nvfs_bridge_ops = {
+	.proc_open	= nvfs_bridge_info_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations nvfs_bridge_ops = {
 	.owner		= THIS_MODULE,
 	.open		= nvfs_bridge_info_open,
@@ -124,6 +150,7 @@ static const struct file_operations nvfs_bridge_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+#endif
 
 // used by nr_devices for parsing
 static int nvfs_devices_show(struct seq_file *m, void *v)
@@ -141,6 +168,14 @@ static int nvfs_devices_info_open(struct inode *inode, struct file *file)
 	return single_open(file, nvfs_devices_show, NULL);
 }
 
+#ifdef HAVE_STRUCT_PROC_OPS
+static const struct proc_ops nvfs_devices_ops = {
+	.proc_open	= nvfs_devices_info_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations nvfs_devices_ops = {
 	.owner		= THIS_MODULE,
 	.open		= nvfs_devices_info_open,
@@ -148,6 +183,7 @@ static const struct file_operations nvfs_devices_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+#endif
 
 /*
  * open "/proc/driver/nvidia-fs/peer_affinity"
@@ -156,7 +192,14 @@ static int nvfs_peer_affinity_info_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, nvfs_peer_affinity_show, NULL);
 }
-
+#ifdef HAVE_STRUCT_PROC_OPS
+static const struct proc_ops nvfs_peer_affinity_ops = {
+	.proc_open	= nvfs_peer_affinity_info_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations nvfs_peer_affinity_ops = {
 	.owner		= THIS_MODULE,
 	.open		= nvfs_peer_affinity_info_open,
@@ -164,6 +207,7 @@ static const struct file_operations nvfs_peer_affinity_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+#endif
 
 /*
  * open "/proc/driver/nvidia-fs/peer_distance"
@@ -174,6 +218,14 @@ static int nvfs_pci_distance_map_info_open(struct inode *inode, struct file *fil
 	return single_open(file, nvfs_peer_distance_show, NULL);
 }
 
+#ifdef HAVE_STRUCT_PROC_OPS
+static const struct proc_ops nvfs_pci_distance_map_ops = {
+	.proc_open	= nvfs_pci_distance_map_info_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations nvfs_pci_distance_map_ops = {
 	.owner		= THIS_MODULE,
 	.open		= nvfs_pci_distance_map_info_open,
@@ -181,6 +233,7 @@ static const struct file_operations nvfs_pci_distance_map_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+#endif
 
 /*
  * initialise the /proc/driver/nvfs/ directory

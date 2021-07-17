@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -53,7 +53,12 @@ fatal() {
 compile_prog() {
    cd ${TMPDIR1}
    echo $1 '\n' >> config.log
-   make >> config.log 2>&1
+   if [ $# -gt 1 ]; then
+	kflags=$2
+	make $kflags >> config.log 2>&1
+   else
+        make >> config.log 2>&1
+   fi
    ret=$?
    if [ "$ret" -eq 0 ]
    then
@@ -243,7 +248,7 @@ int test (void)
 {
         int x = IOCB_HIPRI;
 
-        return 0;
+        return x;
 }
 EOF
 if compile_prog "Checking if IOCB_HIPRI flag exists in fs.h... "; then
@@ -258,12 +263,122 @@ int test (void)
 {
         int x = PCIE_SPEED_32_0GT;
 
-        return 0;
+        return x;
 }
 EOF
 if compile_prog "Checking if enum PCIE_SPEED_32_0GT exists in pci.h... "; then
         output_sym "HAVE_PCIE_SPEED_32_0GT"
 fi
 
+cat > $TEST_C <<EOF
+#include <linux/types.h>
+#include "test.h"
+
+int test (void)
+{
+	atomic64_t var;
+	atomic64_set(&var, 0);
+	printk("%lu", atomic64_read(&var));
+	return 0;
+}
+EOF
+if compile_prog "Checking if atomic64_t counter is of type long... " "KCFLAGS=-Werror"; then
+        output_sym "HAVE_ATOMIC64_LONG"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/blkdev.h>
+#include "test.h"
+
+int test (void)
+{
+	int flags = RQF_COPY_USER;
+	return flags;
+}
+EOF
+if compile_prog "Checking if RQF_COPY_USER is present or not..."; then
+        output_sym "HAVE_RQF_COPY_USER"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/blkdev.h>
+#include "test.h"
+
+int test (void)
+{
+	struct request_queue q;
+	q.dma_drain_size = 0;
+	q.dma_drain_needed = NULL;
+	return 0;
+}
+EOF
+if compile_prog "Checking if dma_drain_size and dma_drain_needed are present in struct request_queue... "; then
+        output_sym "HAVE_DMA_DRAIN_IN_REQUEST_QUEUE"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/proc_fs.h>
+#include "test.h"
+
+int test (void)
+{
+	struct proc_ops ops;
+	memset(&ops, 0, sizeof(struct proc_ops));
+	return 0;
+}
+EOF
+if compile_prog "Checking if struct proc_ops is present or not ..."; then
+        output_sym "HAVE_STRUCT_PROC_OPS"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/mm.h>
+#include "test.h"
+
+int test (void)
+{
+	struct vm_operations_struct vm_ops;
+	vm_ops.split = NULL;
+	return 0;
+}
+EOF
+if compile_prog "Checking if split is present in vm_operations_struct  or not ..."; then
+        output_sym "HAVE_VM_OPS_SPLIT"
+fi
+cat > $TEST_C <<EOF
+#include <linux/mm.h>
+#include "test.h"
+int test_mremap(struct vm_area_struct *area) {
+	return 0;
+}
+int test (void)
+{
+	struct vm_operations_struct vm_ops;
+	vm_ops.mremap = test_mremap;
+	return 0;
+}
+EOF
+if compile_prog "Checking if mremap in vm_operations_struct has one parameter..."; then
+        output_sym "HAVE_VM_OPS_MREMAP_ONE_PARAM"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/mm.h>
+#include "test.h"
+int test_mremap(struct vm_area_struct *area, unsigned long addr) {
+	return 0;
+}
+int test (void)
+{
+	struct vm_operations_struct vm_ops;
+	vm_ops.mremap = test_mremap;
+	return 0;
+}
+EOF
+if compile_prog "Checking if mremap in vm_operations_struct has two parameters..."; then
+        output_sym "HAVE_VM_OPS_MREMAP_TWO_PARAM"
+fi
+
 echo "#endif" >> $config_host_h
 rm -rf build
+

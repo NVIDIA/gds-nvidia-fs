@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
 #define __NVFS_PCI_H_
 
 #include <linux/pci.h>
+#include <asm/pci.h>
 
 // User space has a dependency on device class names
 #define PCI_NVME_CLASS_NAME "nvme"
@@ -202,6 +203,18 @@ static inline struct pci_dev *nvfs_get_pdev_from_pdevinfo(uint64_t pdevinfo) {
 	bus    = (int)((uint32_t)(pdevinfo) >> 8);
 	devfn  = (int)((uint8_t) (pdevinfo) & 0xFF);
 	return pci_get_domain_bus_and_slot(domain, bus, devfn);
+}
+
+// get numa node associated with a pci device
+static inline int nvfs_get_numa_node_from_pdevinfo(uint64_t pdevinfo) {
+	int node = -1;
+	struct pci_dev *pdev;
+	pdev = nvfs_get_pdev_from_pdevinfo(pdevinfo);
+	if (pdev) {
+		node = __pcibus_to_node(pdev->bus);
+		pci_dev_put(pdev);
+	}
+	return node;
 }
 
 struct pci_dev *nvfs_get_next_acs_device(struct pci_dev *from);

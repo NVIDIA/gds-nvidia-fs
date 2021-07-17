@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -32,7 +32,7 @@
 #include <linux/scatterlist.h>
 #include <linux/page-flags.h>
 #include <linux/dma-direction.h>
-
+#include "nvfs-core.h"
 #define NVFS_IO_ERR	-1
 #define NVFS_BAD_REQ	-2
 
@@ -42,6 +42,19 @@
 #ifndef SECTOR_SIZE
 #define SECTOR_SIZE (1 << SECTOR_SHIFT)
 #endif
+
+//These are same key values as the one's in the user space. When adding
+//a new driver make sure to use the same values in user and kernel space.
+#define NVFS_PROC_MOD_NVME_KEY          "nvme"
+#define NVFS_PROC_MOD_NVME_RDMA_KEY     "nvme_rdma"
+#define NVFS_PROC_MOD_SCSI_KEY          "scsi_mod"
+#define NVFS_PROC_MOD_SCALEFLUX_CSD_KEY "sfxvdriver"
+#define NVFS_PROC_MOD_NVMESH_KEY        "nvmeib_common"
+#define NVFS_PROC_MOD_DDN_LUSTRE_KEY    "lnet"
+#define NVFS_PROC_MOD_GPFS_KEY          "mmfslinux"
+#define NVFS_PROC_MOD_NFS_KEY           "rpcrdma"
+#define NVFS_PROC_MOD_WEKAFS_KEY        "wekafsio"
+
 
 struct nvfs_dma_rw_ops {
 	unsigned long long ft_bmap; // feature bitmap
@@ -66,14 +79,19 @@ struct nvfs_dma_rw_ops {
 	unsigned int (*nvfs_gpu_index) (struct page *page);
 
 	unsigned int (*nvfs_device_priority) (struct device *dev, unsigned int gpu_index);
+	
+	int (*nvfs_get_gpu_sglist_rdma_info) (struct scatterlist *sglist,
+					    int nents,
+					    struct nvfs_rdma_info *rdma_infop);
 };
 
 // feature list for dma_ops, values indicate bit pos
 enum ft_bits {
-	nvfs_ft_prep_sglist         = 1ULL << 0,
-	nvfs_ft_map_sglist          = 1ULL << 1,
-	nvfs_ft_is_gpu_page         = 1ULL << 2,
-	nvfs_ft_device_priority     = 1ULL << 3,
+	nvfs_ft_prep_sglist         		= 1ULL << 0,
+	nvfs_ft_map_sglist          		= 1ULL << 1,
+	nvfs_ft_is_gpu_page         		= 1ULL << 2,
+	nvfs_ft_device_priority     		= 1ULL << 3,
+	nvfs_ft_get_gpu_sglist_rdma_info 	= 1ULL << 4,	
 };
 
 // check features for use in registration with vendor drivers
@@ -81,9 +99,10 @@ enum ft_bits {
 #define NVIDIA_FS_CHECK_FT_SGLIST_DMA(ops)          ((ops)->ft_bmap & nvfs_ft_map_sglist)
 #define NVIDIA_FS_CHECK_FT_GPU_PAGE(ops)            ((ops)->ft_bmap & nvfs_ft_is_gpu_page)
 #define NVIDIA_FS_CHECK_FT_DEVICE_PRIORITY(ops)     ((ops)->ft_bmap & nvfs_ft_device_priority)
-
+#define NVIDIA_FS_CHECK_FT_GET_GPU_sglist_RDMA_INFO(ops)   \
+						    ((ops)->ft_bmap & nvfs_ft_get_gpu_sglist_rdma_info)
 // publish features
-#define NVIDIA_FS_SET_FT_ALL  (nvfs_ft_prep_sglist | nvfs_ft_map_sglist | nvfs_ft_is_gpu_page | nvfs_ft_device_priority)
+#define NVIDIA_FS_SET_FT_ALL  (nvfs_ft_prep_sglist | nvfs_ft_map_sglist | nvfs_ft_is_gpu_page | nvfs_ft_device_priority | nvfs_ft_get_gpu_sglist_rdma_info)
 
 typedef int (*nvfs_register_dma_ops_fn_t) (struct nvfs_dma_rw_ops *ops);
 typedef void (*nvfs_unregister_dma_ops_fn_t) (void);

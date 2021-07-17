@@ -1,6 +1,6 @@
 /* Stats for NVFS 
  *
- * Copyright (C) 2020 Nvidia, Corp. All Rights Reserved.
+ * Copyright (C) 2021 Nvidia, Corp. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public Licence
@@ -11,10 +11,12 @@
 #ifndef NVFS_STAT_H
 #define NVFS_STAT_H
 
+#include "config-host.h"
+
 #include <linux/ktime.h>
 #include <linux/version.h>
 
-#define NVFS_STAT_VERSION		2
+#define NVFS_STAT_VERSION		4
 #define BYTES_TO_MB(b) ((b) >> 20ULL)
 #define NVFS_MAX_GPU		16
 #define NVFS_MAX_GPU_BITS	ilog2(NVFS_MAX_GPU)
@@ -102,12 +104,17 @@ extern atomic_t nvfs_n_op_process;
 extern atomic_t nvfs_n_err_mix_cpu_gpu;
 extern atomic_t nvfs_n_err_sg_err;
 extern atomic_t nvfs_n_err_dma_map;
+extern atomic_t nvfs_n_err_dma_ref;
 
 extern atomic_t nvfs_n_pg_cache;
 extern atomic_t nvfs_n_pg_cache_fail;
 extern atomic_t nvfs_n_pg_cache_eio;
 
+#ifdef HAVE_STRUCT_PROC_OPS
+extern const struct proc_ops nvfs_stats_fops;
+#else
 extern const struct file_operations nvfs_stats_fops;
+#endif
 
 static inline void nvfs_stat(atomic_t *stat)
 {
