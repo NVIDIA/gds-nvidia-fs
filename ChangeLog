@@ -1,3 +1,9 @@
+nvidia-fs (2.12) RELEASE; urgency=low
+ * minor fixes to support newer kernels 
+ --   Mar 2022
+nvidia-fs (2.11) RELEASE; urgency=low
+ * no changes, version bump for minor releases
+ --   Mar 2022
 nvidia-fs (2.10) RELEASE; urgency=low
  * Enable batch API support for GDS
  * performance improvements in munmap
