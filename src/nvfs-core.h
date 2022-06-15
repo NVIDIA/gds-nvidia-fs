@@ -115,12 +115,22 @@ struct nvfs_ioctl_ioargs {
     uint8_t hipri:1;		// set hipri flag in IO path
     uint8_t allowreads:1;	// allow reads for O_WRONLY
     uint8_t use_rkeys:1;	// use RDMA rkey for IO 
-    uint8_t reserved:4;		// reserved for future
+    uint8_t optype:3;		// optype (READ:0 | WRITE:1) 
+    uint8_t reserved:1;		// reserved for future
     u8 padding[3];              // padding
 } __attribute__((packed, aligned(8)));
 typedef struct nvfs_ioctl_ioargs nvfs_ioctl_ioargs_t;
 
+#ifdef NVFS_BATCH_SUPPORT
+struct nvfs_ioctl_batch_ioargs {
+  uint64_t ctx_id;
+  uint64_t nents;
+  nvfs_ioctl_ioargs_t *io_entries;
+} __attribute__((packed, aligned(8)));
+typedef struct nvfs_ioctl_batch_ioargs nvfs_ioctl_batch_ioargs_t;
+#endif
 
+#define NVFS_RDMA_MIN_SUPPORTED_VERSION 2
 struct nvfs_ioctl_set_rdma_reg_info_args {
 	uint64_t 	cpuvaddr;
 	uint64_t  	gid[2];
@@ -154,6 +164,9 @@ union nvfs_ioctl_param_u {
     nvfs_ioctl_get_rdma_reg_info_args_t rdma_get_reg_info; //Get RDMA reg info from kernel(mgroup)
     nvfs_ioctl_clear_rdma_reg_info_args_t rdma_clear_reg_info; //Clear RDMA reg info in the kernel
 #endif
+#ifdef NVFS_BATCH_SUPPORT
+    nvfs_ioctl_batch_ioargs_t batch_ioargs;   // Read/Write
+#endif
 } __attribute__((packed, aligned(8)));
 typedef union nvfs_ioctl_param_u nvfs_ioctl_param_union;
 
@@ -184,6 +197,11 @@ struct nvfs_ioctl_metapage {
 };
 typedef struct nvfs_ioctl_metapage* nvfs_ioctl_metapage_ptr_t;
 
+
+struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs);
+long nvfs_io_start_op(nvfs_io_t *nvfsio);
+void nvfs_io_free(nvfs_io_t *nvfsio, long res);
+
 nvfs_io_sparse_dptr_t nvfs_io_map_sparse_data(nvfs_mgroup_ptr_t nvfs_mgroup);
 void nvfs_io_unmap_sparse_data(nvfs_io_sparse_dptr_t ptr, nvfs_metastate_enum state);
 
@@ -207,6 +225,10 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 #define NVFS_IOCTL_GET_RDMA_REG_INFO	_IOW(NVFS_MAGIC, 6, int)
 #define NVFS_IOCTL_CLEAR_RDMA_REG_INFO	_IOW(NVFS_MAGIC, 7, int)
 
+#ifdef NVFS_BATCH_SUPPORT
+#define NVFS_IOCTL_BATCH_IO     	_IOW(NVFS_MAGIC, 8, int)
+#endif
+
 #define PAGE_PER_GPU_PAGE_SHIFT  4
 #define GPU_PAGE_SHIFT   16
 #define GPU_PAGE_SIZE    ((u64)1 << GPU_PAGE_SHIFT)
@@ -218,6 +240,7 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 
 // File-system magics which are not part of linux/magic.h
 #define LUSTRE_SUPER_MAGIC 0x0bd00bd0U
+#define BEEGFS_SUPER_MAGIC  0x19830326U
 
 #define NVFS_MAY_SLEEP()                  (!irqs_disabled() && !in_interrupt() && !in_atomic() && !in_nmi())
 

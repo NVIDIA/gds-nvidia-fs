@@ -379,6 +379,21 @@ if compile_prog "Checking if mremap in vm_operations_struct has two parameters..
         output_sym "HAVE_VM_OPS_MREMAP_TWO_PARAM"
 fi
 
+cat > $TEST_C <<EOF
+#include <linux/module.h>
+#include "test.h"
+
+int test (void)
+{
+        mutex_lock(&module_mutex);
+        mutex_unlock(&module_mutex);
+        return 0;
+}
+EOF
+if compile_prog "Checking if symbol module_mutex is present..."; then
+        output_sym "HAVE_MODULE_MUTEX"
+fi
+
 echo "#endif" >> $config_host_h
 rm -rf build
 

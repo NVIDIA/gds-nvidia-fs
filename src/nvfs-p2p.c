@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -27,7 +27,9 @@
 #include "nv-p2p.h"
 #include "nvfs-core.h"
 
+#ifdef HAVE_MODULE_MUTEX
 extern struct mutex module_mutex;
+#endif
 
 static nvidia_p2p_dma_unmap_pages_fptr nvidia_p2p_dma_unmap_pages_p = NULL;
 static nvidia_p2p_get_pages_fptr nvidia_p2p_get_pages_p = NULL;
@@ -65,8 +67,9 @@ static inline void nvfs_nvidia_put_symbols(void) {
 
 int nvfs_nvidia_p2p_init() {
 	
+#ifdef HAVE_MODULE_MUTEX
 	mutex_lock(&module_mutex);
-
+#endif
 	if(nvidia_p2p_dma_unmap_pages_p == NULL) {
 		nvidia_p2p_dma_unmap_pages_p = __symbol_get("nvidia_p2p_dma_unmap_pages");
 		if(nvidia_p2p_dma_unmap_pages_p == NULL) {
@@ -114,18 +117,26 @@ int nvfs_nvidia_p2p_init() {
 			goto error;
 		}
 	}
+#ifdef HAVE_MODULE_MUTEX
 	mutex_unlock(&module_mutex);
+#endif
 	return 0;
 error:
+#ifdef HAVE_MODULE_MUTEX
 	mutex_unlock(&module_mutex);
+#endif
 	nvfs_nvidia_put_symbols();
 	return -1;
 }
 
 void nvfs_nvidia_p2p_exit() {
+#ifdef HAVE_MODULE_MUTEX
 	mutex_lock(&module_mutex);
+#endif
 	nvfs_nvidia_put_symbols();
+#ifdef HAVE_MODULE_MUTEX
 	mutex_unlock(&module_mutex);
+#endif
 }
 
 int nvfs_nvidia_p2p_dma_unmap_pages(struct pci_dev *peer,

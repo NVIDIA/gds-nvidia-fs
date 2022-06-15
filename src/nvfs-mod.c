@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -28,9 +28,10 @@
 #include "nvfs-dma.h"
 #include "config-host.h"
 
+#ifdef HAVE_MODULE_MUTEX
 //exported symbol by kernel module.c
 extern struct mutex module_mutex;
-
+#endif
 // module entries2
 extern struct module_entry modules_list[];
 
@@ -47,11 +48,14 @@ int probe_module_list(void) {
 		if (mod_entry->found)
 			continue;
 
+#ifdef HAVE_MODULE_MUTEX
 		mutex_lock(&module_mutex);
-
+#endif
 		mod_entry->reg_func = __symbol_get(mod_entry->reg_ksym);
 		if (!mod_entry->reg_func) {
+#ifdef HAVE_MODULE_MUTEX
 			mutex_unlock(&module_mutex);
+#endif
 			continue;
 		}
 
@@ -59,14 +63,18 @@ int probe_module_list(void) {
 		// We must have complete pairs, otherwise will have inconsistent behavior.
 		if (!mod_entry->dreg_func) {
 			__symbol_put(mod_entry->reg_ksym);
+#ifdef HAVE_MODULE_MUTEX
 			mutex_unlock(&module_mutex);
+#endif
 			mod_entry->reg_func = NULL;
 			mod_entry->found = false;
 			pr_err("deregister funtion not found %s", mod_entry->dreg_ksym);
 			continue;
 		}
 
+#ifdef HAVE_MODULE_MUTEX
 		mutex_unlock(&module_mutex);
+#endif
 
 		// register here. On failure, mark module not found and scan next.
 		// Note: on registration failure, it is expected that vendor module
@@ -77,12 +85,16 @@ int probe_module_list(void) {
 			pr_err("nvfs registration failed for module sym :%s, error :%d\n",
 				mod_entry->reg_ksym, ret);
 
+#ifdef HAVE_MODULE_MUTEX
 			mutex_lock(&module_mutex);
+#endif
 			__symbol_put(mod_entry->dreg_ksym);
 			mod_entry->dreg_func = NULL;
 			__symbol_put(mod_entry->reg_ksym);
 			mod_entry->reg_func = NULL;
+#ifdef HAVE_MODULE_MUTEX
 			mutex_unlock(&module_mutex);
+#endif
 			mod_entry->found = false;
 			ret = 0;
 			continue;
@@ -112,15 +124,17 @@ void cleanup_module_list(void) {
 			mod_entry->found = false;
 			mod_entry->dreg_func();
 
+#ifdef HAVE_MODULE_MUTEX
 			mutex_lock(&module_mutex);
-
+#endif
 			__symbol_put(mod_entry->dreg_ksym);
 			mod_entry->dreg_func = NULL;
 
 			__symbol_put(mod_entry->reg_ksym);
 			mod_entry->reg_func = NULL;
-
+#ifdef HAVE_MODULE_MUTEX
 			mutex_unlock(&module_mutex);
+#endif
 
 			// initialized at compile time
 			if (!mod_entry->is_mod)

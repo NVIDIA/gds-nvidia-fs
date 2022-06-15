@@ -51,6 +51,7 @@
 #define NVFS_PROC_MOD_SCALEFLUX_CSD_KEY "sfxvdriver"
 #define NVFS_PROC_MOD_NVMESH_KEY        "nvmeib_common"
 #define NVFS_PROC_MOD_DDN_LUSTRE_KEY    "lnet"
+#define NVFS_PROC_MOD_NTAP_BEEGFS_KEY    "beegfs"
 #define NVFS_PROC_MOD_GPFS_KEY          "mmfslinux"
 #define NVFS_PROC_MOD_NFS_KEY           "rpcrdma"
 #define NVFS_PROC_MOD_WEKAFS_KEY        "wekafsio"

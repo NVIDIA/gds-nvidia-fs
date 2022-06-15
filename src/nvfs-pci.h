@@ -211,7 +211,7 @@ static inline int nvfs_get_numa_node_from_pdevinfo(uint64_t pdevinfo) {
 	struct pci_dev *pdev;
 	pdev = nvfs_get_pdev_from_pdevinfo(pdevinfo);
 	if (pdev) {
-		node = __pcibus_to_node(pdev->bus);
+		node = pcibus_to_node(pdev->bus);
 		pci_dev_put(pdev);
 	}
 	return node;

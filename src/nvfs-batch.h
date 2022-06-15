@@ -19,28 +19,21 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
-#ifndef __NVFS_DRIVER_VERSION_H_
-#define __NVFS_DRIVER_VERSION_H_
+#ifndef NVFS_BATCH_H
+#define NVFS_BATCH_H
 
-/* please update the driver version here and also the debian change log*/
+#include "nvfs-core.h"
+#include "nvfs-mmap.h"
 
-#define NVFS_DRIVER_MAJOR_VERSION   2U //2-bytes
+#define NVFS_MAX_BATCH_ENTRIES 256 
 
-#define NVFS_DRIVER_MINOR_VERSION   12U //2-bytes
+typedef struct {
+   uint64_t ctx_id;
+   ktime_t start_io;		// Start time of IO for latency calculation
+   uint64_t nents;
+   nvfs_io_t *nvfsio[NVFS_MAX_BATCH_ENTRIES]; 
+} nvfs_batch_io_t;
 
-// template for build version
-#define NVFS_DRIVER_PATCH_VERSION  4U
-
-static inline unsigned int nvfs_driver_version(void) {
-    return (NVFS_DRIVER_MAJOR_VERSION << 16) | NVFS_DRIVER_MINOR_VERSION;
-}
-
-static inline unsigned short nvfs_major_version(unsigned int version) {
-    return (version >> 16);
-}
-
-static inline unsigned short nvfs_minor_version(unsigned int version) {
-    return (unsigned short) version;
-}
-
+nvfs_batch_io_t* nvfs_io_batch_init(nvfs_ioctl_param_union *input_param);
+long nvfs_io_batch_submit(nvfs_batch_io_t *nvfs_batch);
 #endif

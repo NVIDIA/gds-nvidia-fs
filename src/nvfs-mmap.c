@@ -109,10 +109,16 @@ static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup)
 
         spin_lock(&lock);	
         hash_del_rcu(&nvfs_mgroup->hash_link);
-	spin_unlock(&lock);
-	synchronize_rcu();
+        spin_unlock(&lock);
 
-	gpu_info = &nvfs_mgroup->gpu_info;
+        // don't use rcu expedited version when calling in IRQ context
+        if (unlikely(NVFS_MAY_SLEEP())) {
+                synchronize_rcu();
+        } else  {
+                synchronize_rcu_expedited();
+        }
+
+        gpu_info = &nvfs_mgroup->gpu_info;
 
 	if (atomic_read(&gpu_info->io_state) > IO_INIT) {
 		nvfs_stat_d(&nvfs_n_op_maps);
@@ -524,8 +530,16 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
            pages allocated */
         if (length > NVFS_MAX_SHADOW_PAGES * PAGE_SIZE)
                 goto error;
-        if (length % PAGE_SIZE)
+        /* if the length is less than 64K, check for 4K alignment */
+        if (length < GPU_PAGE_SIZE && (length % PAGE_SIZE)) {
+	        nvfs_err("mmap size not a multiple of 4K for size < 64K : 0x%lx \n", length);
                 goto error;
+        }
+        /* if the length is greater than 64K, check for 64K alignment */
+        if (length > GPU_PAGE_SIZE && (length % GPU_PAGE_SIZE)) {
+	        nvfs_err("mmap size not a multiple of 64K: 0x%lx for size >64k \n", length);
+                goto error;
+        }
 
         if ((vma->vm_flags & (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE)) != (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE))
         {
@@ -587,7 +601,7 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
         	goto error;
         }
 
-        nvfs_pages_count = (length / PAGE_SIZE);
+        nvfs_pages_count = DIV_ROUND_UP(length, PAGE_SIZE);
         nvfs_mgroup->nvfs_ppages = (struct page**)kzalloc(nvfs_pages_count *
 					sizeof(struct page*), GFP_KERNEL);
 	if (!nvfs_mgroup->nvfs_ppages) {
@@ -859,7 +873,7 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_page_sta
 		nvfsio->ret = sparse_read_bytes_limit;
 }
 
-static void nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvfs_mdata, struct nvfs_io *nvfsio)
+static void nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvfs_mdata, nvfs_io_t *nvfsio)
 {
         BUG_ON(!page);
 	BUG_ON(nvfs_mdata->nvfs_start_magic != NVFS_START_MAGIC);
@@ -872,7 +886,7 @@ static void nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvf
 }
 
 
-void nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages)
+int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages)
 {
         struct nvfs_io* nvfsio = &nvfs_mgroup->nvfsio;
         int j;
@@ -880,18 +894,23 @@ void nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages)
 
         if (unlikely(nr_pages > nvfs_mgroup->nvfs_pages_count)) {
 		nvfs_err("nr_pages :%u nvfs_pages_count :%lu\n", nr_pages, nvfs_mgroup->nvfs_pages_count);
-		BUG();
+	        return -EIO;
 	}
 	
-	if(nvfsio->gpu_page_offset) {
-                // page offset is less than or equal to 60K
-                BUG_ON(nvfsio->gpu_page_offset > (GPU_PAGE_SIZE - PAGE_SIZE));
-                // page offset is 4K aligned
-                BUG_ON(nvfsio->gpu_page_offset % PAGE_SIZE);
-                // total io size is less than or equal to 60K
-                BUG_ON((nvfsio->gpu_page_offset +  ((loff_t)nr_pages << PAGE_SHIFT)) > GPU_PAGE_SIZE);
+	if (nvfsio->gpu_page_offset) {
+                // check page offset is less than or equal to 60K
+                if (nvfsio->gpu_page_offset > (GPU_PAGE_SIZE - PAGE_SIZE))
+                      return -EIO;
+                // check page offset is 4K aligned
+                if (nvfsio->gpu_page_offset % PAGE_SIZE)
+                      return -EIO;
+                // check total io size is less than or equal to 60K
+                if ((nvfsio->gpu_page_offset +  ((loff_t)nr_pages << PAGE_SHIFT)) > GPU_PAGE_SIZE)
+                      return -EIO;
                 pgoff = nvfsio->gpu_page_offset >> PAGE_SHIFT;
-                BUG_ON((pgoff + nr_pages) > nvfs_mgroup->nvfs_pages_count);
+                // check shadow buffer pages are big enough to map the (gpu base address + offset)
+                if (((pgoff + nr_pages) > nvfs_mgroup->nvfs_pages_count))
+                      return -EIO;
                 for (j = 0; j < pgoff; ++j) {
                         nvfs_mgroup->nvfs_metadata[j].nvfs_state = NVFS_IO_INIT;
                 }
@@ -905,7 +924,7 @@ void nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages)
         nvfsio->nvfs_active_pages_end = j-1;
 
         // clear the state for unqueued pages
-        for(; j < nvfs_mgroup->nvfs_pages_count ; j++) {
+        for (; j < nvfs_mgroup->nvfs_pages_count ; j++) {
                 nvfs_mgroup->nvfs_metadata[j].nvfs_state = NVFS_IO_INIT;
         }
 
@@ -914,6 +933,7 @@ void nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages)
                   (u64)nvfsio->cpuvaddr,
                   nvfsio->nvfs_active_pages_start,
                   nvfsio->nvfs_active_pages_end);
+        return 0;
 }
 
 // eg: page->index relative to base_index (16 + 1) will return 1, 4K
