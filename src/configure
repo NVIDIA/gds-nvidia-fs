@@ -146,6 +146,7 @@ fi
 
 cat > $TEST_C <<EOF
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include "test.h"
 
 int test (void)
@@ -377,6 +378,56 @@ int test (void)
 EOF
 if compile_prog "Checking if mremap in vm_operations_struct has two parameters..."; then
         output_sym "HAVE_VM_OPS_MREMAP_TWO_PARAM"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/module.h>
+#include "test.h"
+
+int test (void)
+{
+        mutex_lock(&module_mutex);
+        mutex_unlock(&module_mutex);
+        return 0;
+}
+EOF
+if compile_prog "Checking if symbol module_mutex is present..."; then
+        output_sym "HAVE_MODULE_MUTEX"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/blk-integrity.h>
+#include "test.h"
+
+int test (void)
+{
+	blk_integrity_rq(NULL);
+	return 0;
+}
+
+EOF
+if compile_prog "Checking if blk-integrity.h is present..."; then
+	output_sym "HAVE_BLK_INTEGRITY_H"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/mm_types.h>
+#include <linux/mm.h>
+#include "test.h"
+
+int test (void)
+{
+	struct temp {
+		int a;
+	};
+	struct temp t;
+	struct page *p;
+	pin_user_pages_fast((unsigned long)&t, 1, 1, &p);
+	return 0;
+}
+EOF
+if compile_prog "Checking if pin_user_pages_fast symbol is present in kernel or not ..."; then
+        output_sym "HAVE_PIN_USER_PAGES_FAST"
 fi
 
 echo "#endif" >> $config_host_h

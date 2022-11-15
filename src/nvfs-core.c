@@ -55,7 +55,7 @@
 #include <linux/delay.h>
 
 #include "nvfs-core.h"
-#include "nvfs-peer.h"
+#include "nvfs-batch.h"
 #include "nvfs-dma.h"
 #include "nvfs-pci.h"
 #include "nvfs-stat.h"
@@ -65,6 +65,7 @@
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
 #include "nvfs-rdma.h"
 #endif
+#include "nvfs-vers.h"
 
 #include <linux/magic.h>
 
@@ -78,6 +79,11 @@
 
 //#define SIMULATE_BUG_RW_VERIFY_FAILURE
 //#define SIMULATE_LESS_BYTES
+
+#define SYMTOSTR(symbol) #symbol
+#define TO_STR(A) SYMTOSTR(A)
+#define MAJ_MIN_P_V(maj, min, patch) maj##.##min##.##patch
+#define MOD_VERS(major, minor, p) MAJ_MIN_P_V(major, minor, p)
 
 static int major_number;
 static struct class* nvfs_class = NULL;
@@ -130,12 +136,12 @@ unsigned int nvfs_get_device_count(void) {
 }
 
 static inline bool nvfs_transit_state(struct nvfs_gpu_args *gpu_info,
-	int from, int to)
+	bool sync, int from, int to)
 {
 	bool io_transit = true;
 	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(gpu_info, struct nvfs_io_mgroup,
 				gpu_info);
-	struct nvfs_io *nvfsio = &nvfs_mgroup->nvfsio;
+	nvfs_io_t* nvfsio = &nvfs_mgroup->nvfsio;
 	nvfs_dbg("IO Transit requested from %s->%s nvfsio :%p\n",
 			nvfs_io_state_status(from), nvfs_io_state_status(to), nvfsio);
 
@@ -175,8 +181,16 @@ static inline bool nvfs_transit_state(struct nvfs_gpu_args *gpu_info,
 			nvfs_io_state_status(to),
 			nvfs_io_state_status(from),
 			nvfs_io_state_status(IO_TERMINATED));
-		atomic_set(&gpu_info->io_state, IO_TERMINATED);
-		wake_up_all(&gpu_info->callback_wq);
+                // free the nvfs_mgroup if the io thread is sync and callback has not taken ownership 
+                if(sync && atomic_cmpxchg(&gpu_info->io_state, IO_TERMINATE_REQ, IO_TERMINATED) == IO_TERMINATE_REQ) {
+                        wake_up_all(&gpu_info->callback_wq);
+                        nvfs_mgroup_put(nvfs_mgroup);
+                } else {
+                        atomic_set(&gpu_info->io_state, IO_CALLBACK_END);
+                        wake_up_all(&gpu_info->callback_wq);
+                }
+		nvfs_err("Set current state to %s\n", 
+			nvfs_io_state_status(atomic_read(&gpu_info->io_state)));
 		return io_transit;
 	}
 
@@ -185,39 +199,81 @@ static inline bool nvfs_transit_state(struct nvfs_gpu_args *gpu_info,
 	return io_transit;
 }
 
-bool nvfs_io_terminate_requested(struct nvfs_gpu_args *gpu_info)
+bool nvfs_io_terminate_requested(struct nvfs_gpu_args *gpu_info, bool callback)
 {
-	if (atomic_cmpxchg(&gpu_info->io_state, IO_INIT,
-                        IO_TERMINATE_REQ) == IO_INIT)
-		return true;
+        int tstate = (callback) ? IO_CALLBACK_END : IO_TERMINATED;
 
-	if (atomic_cmpxchg(&gpu_info->io_state,
-                    IO_IN_PROGRESS, IO_TERMINATE_REQ) ==
-			IO_IN_PROGRESS)
-		return true;
-
-	if (atomic_read(&gpu_info->io_state) == IO_TERMINATE_REQ)
-		return true;
-
-	if (atomic_cmpxchg(&gpu_info->io_state, IO_READY,
-                    IO_TERMINATED) == IO_READY)
+       
+        //In the following there scenarios no IO would be on-going, it's safe to mark the 
+        //state as termiated and return false, so that the caller doesn't wait 
+        //of IOs to be finished	
+	if(atomic_cmpxchg(&gpu_info->io_state, IO_FREE,
+				IO_TERMINATED) == IO_FREE)
 		return false;
+	
+	if (atomic_cmpxchg(&gpu_info->io_state, IO_INIT,
+                        tstate) == IO_INIT)
+		return false;
+
+	if(atomic_cmpxchg(&gpu_info->io_state, IO_READY,
+				tstate) == IO_READY)
+		return false;
+
+        
+        //Callback will take the responsibilty of freeing up if terminate is requested
+        //by the callback and the current state is either IO_PROGRESS or TERMINATED_REQ
+        //TERMINATE_REQ would be requested by the nvfs_vma_close and if we do not take ownership,
+        //a sync IO can try to do a put after callback is finished which can lead to errors or
+        //panics 
+	if (callback) {
+                 if(atomic_cmpxchg(&gpu_info->io_state,
+                    IO_IN_PROGRESS, IO_CALLBACK_REQ) == IO_IN_PROGRESS) 
+                        return true;
+                 // io in progress and terminate started by vma_close
+                 // callback takes ownership of the termination
+                 if (atomic_cmpxchg(&gpu_info->io_state,
+                    IO_TERMINATE_REQ, IO_CALLBACK_REQ) == IO_TERMINATE_REQ)
+                        return true;
+                 
+        } else {
+	        if (atomic_cmpxchg(&gpu_info->io_state,
+                    IO_IN_PROGRESS, IO_TERMINATE_REQ) == IO_IN_PROGRESS)
+		        return true;
+        }
+
+        //The caller needs to wait for IOs to finish if any of the below state is set
+	if (atomic_read(&gpu_info->io_state) == IO_TERMINATE_REQ 
+	    || atomic_read(&gpu_info->io_state) == IO_CALLBACK_REQ)
+		return true;
 
 	return false;	
 }
 
-static void nvfs_io_terminate(struct nvfs_gpu_args *gpu_info)
+static void nvfs_io_terminate(struct nvfs_gpu_args *gpu_info, bool callback)
 {
 	if (gpu_info) {
-		if (nvfs_io_terminate_requested(gpu_info)) {
+		if (nvfs_io_terminate_requested(gpu_info, callback)) {
 			nvfs_mgroup_ptr_t nvfs_mgroup = container_of(gpu_info, struct nvfs_io_mgroup,
 						gpu_info);
-			struct nvfs_io *nvfsio = &nvfs_mgroup->nvfsio;
+			nvfs_io_t* nvfsio = &nvfs_mgroup->nvfsio;
 			nvfs_err("%s:%d Waiting for IO to be terminated nvfsio :%p\n",
 				__func__, __LINE__, nvfsio);
-			wait_event(gpu_info->callback_wq,
-				(atomic_read(&gpu_info->io_state) ==
-					IO_TERMINATED));
+                      
+                        do { 
+                                if (atomic_read(&gpu_info->io_state) == IO_CALLBACK_REQ) {
+                                        wait_event_interruptible_timeout(gpu_info->callback_wq,
+                                                        (atomic_read(&gpu_info->io_state) ==
+                                                         IO_CALLBACK_END),
+                                                        msecs_to_jiffies(1));
+                                } else {
+                                        wait_event_interruptible_timeout(gpu_info->callback_wq,
+                                                        (atomic_read(&gpu_info->io_state) ==
+                                                         IO_TERMINATED),
+                                                        msecs_to_jiffies(1));
+                                }
+                        } while ((atomic_read(&gpu_info->io_state) != IO_CALLBACK_END &&
+                                  atomic_read(&gpu_info->io_state) != IO_TERMINATED)); 
+                                 
 		}
 	}
 }
@@ -244,8 +300,20 @@ static void nvfs_get_pages_free_callback(void *data)
 		__func__, __LINE__,
 		nvfs_io_state_status(atomic_read(&gpu_info->io_state)));
 
-	nvfs_io_terminate(gpu_info);
+	nvfs_io_terminate(gpu_info, 1);
 
+
+        // vma_close or sync io thread will free the memory 
+	if (atomic_read(&gpu_info->io_state) != IO_CALLBACK_END) {
+		//wait for completion state. After that delay for 1us to give nvfs_mgroup_put 
+		//to invoke unpin pages and return
+		while(atomic_read(&gpu_info->io_state) != IO_UNPIN_PAGES_ALREADY_INVOKED);
+		udelay(5);
+		return;
+        }
+
+	nvfs_dbg("Clearing hash tables for mgroup %p state %s \n", 
+			nvfs_mgroup, nvfs_io_state_status(atomic_read(&gpu_info->io_state)));
 	//From this moment onwards, no new
 	// IOs can be submitted
 
@@ -258,13 +326,12 @@ static void nvfs_get_pages_free_callback(void *data)
 		ret = nvfs_nvidia_p2p_free_dma_mapping(
 				pci_dev_mapping->dma_mapping);
 		if (ret) {
-			nvfs_info("Error when freeing dma mapping\n");
+			nvfs_err("Error when freeing dma mapping\n");
 		}
 		hash_del(&pci_dev_mapping->hentry);
 		kfree(pci_dev_mapping);
 		pci_dev_mapping = NULL;
 	}
-
 	nvfs_update_free_gpustat(gpu_info);
 
 	page_table = xchg(&gpu_info->page_table, NULL);
@@ -272,13 +339,15 @@ static void nvfs_get_pages_free_callback(void *data)
 		nvfs_dbg("callback freeing page tables\n");
 		ret = nvfs_nvidia_p2p_free_page_table(page_table);
 		if (ret)
-			nvfs_info("Error when freeing page table\n");
+			nvfs_err("Error when freeing page table\n");
 	}
 
+#if 0
 	// terminated state is the terminal state
 	if (unlikely(atomic_cmpxchg(&gpu_info->io_state, IO_TERMINATED,
 				IO_CALLBACK_END) != IO_TERMINATED))
 		BUG();
+#endif
 
 	nvfs_ioctl_mpage_ptr = kmap_atomic(gpu_info->end_fence_page);
 	nvfs_ioctl_mpage_ptr->state = NVFS_IO_META_DIED;
@@ -294,7 +363,7 @@ static void nvfs_get_pages_free_callback(void *data)
  * This will map the GPU BAR pages into device I/O address space.
  */
 static int
-nvfs_get_dma_address(struct nvfs_io *nvfsio,
+nvfs_get_dma_address(nvfs_io_t* nvfsio,
 		struct pci_dev *peer,
 		struct nvidia_p2p_dma_mapping **dma_mapping, int *n_dma_chunks)
 {
@@ -344,10 +413,10 @@ nvfs_get_dma_address(struct nvfs_io *nvfsio,
 
 
 	for (i = 0; i < (*dma_mapping)->entries - 1; i++) {
-		nvfs_dbg("%d Physical 0x%016llx DMA 0x%016llx\n", i,
+		nvfs_dbg("%d DMA Addr: 0x%016llx PHY Addr: 0x%016llx\n", i,
 			(*dma_mapping)->dma_addresses[i],
 			page_table->pages[i]->physical_address);
-		if((*dma_mapping)->dma_addresses[i] + GPU_PAGE_SIZE != 
+		if((*dma_mapping)->dma_addresses[i] + GPU_PAGE_SIZE !=
 			(*dma_mapping)->dma_addresses[i + 1])
 			ndmachunks += 1;
 	}
@@ -384,7 +453,7 @@ nvfs_get_dma_address(struct nvfs_io *nvfsio,
 	 * 128k-160k and 192k-224k -> which maps to 128k-192k GPU Phys address
 	 *
 	 * We may have a SG entry with 64k as segment size, but the DMA addresses for the entire 64k segment
-	 * are not contiguous. 
+	 * are not contiguous.
 	 */
 	if (ndmachunks != gpu_info->n_phys_chunks) {
 		if (ndmachunks > gpu_info->n_phys_chunks) {
@@ -588,7 +657,7 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
 	 * 128k-160k and 192k-224k -> which maps to 128k-192k GPU Phys address
 	 *
 	 * We may have a SG entry with 64k as segment size, but the DMA addresses for the entire 64k segment
-	 * are not contiguous. 
+	 * are not contiguous.
 	 */
 	if ((dma_length > GPU_PAGE_SIZE) && (n_dma_chunks > 1)) {
 		dma_addr_t start_addr = dma_start_addr;
@@ -612,8 +681,8 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
 					nvfs_err("DMA Address range are not contiguous for the give sg->length. sg->length %ld "
 						"gpu_iter_index %ld dma_length %ld start_addr %ld next_addr %ld "
 						"n_dma_chunks %d\n",
-						(unsigned long)sg_length, (unsigned long)gpu_iter_index, 
-						(unsigned long)dma_length, (unsigned long)start_addr, 
+						(unsigned long)sg_length, (unsigned long)gpu_iter_index,
+						(unsigned long)dma_length, (unsigned long)start_addr,
 						(unsigned long)dma_mapping->dma_addresses[gpu_iter_index],
 						n_dma_chunks);
 					goto exit;
@@ -633,27 +702,12 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
 
 exit:
 	if(nvfs_mgroup && !IS_ERR(nvfs_mgroup)) {
-		nvfs_mgroup_put(nvfs_mgroup);
+		nvfs_mgroup_put_dma(nvfs_mgroup);
 	}
         nvfs_err("Unable to obtain dma_mapping for %lx\n", gpu_page_index);
         return NVFS_IO_ERR;
 bad_request:
 	return NVFS_BAD_REQ;
-}
-
-/*
- * Initialize iov_iter for READ/WRITE
- */
-static void nvfs_iov_iter_init(struct iov_iter *i, int direction,
-			const struct iovec *iov, unsigned long nr_segs,
-			size_t count)
-{
-	i->type = direction;
-	i->iov = iov;
-
-	i->nr_segs = nr_segs;
-	i->iov_offset = 0;
-	i->count = count;
 }
 
 nvfs_io_sparse_dptr_t nvfs_io_map_sparse_data(nvfs_mgroup_ptr_t nvfs_mgroup)
@@ -677,11 +731,12 @@ void nvfs_io_unmap_sparse_data(nvfs_io_sparse_dptr_t ptr,
         kunmap_atomic(kaddr);
 }
 
-static void nvfs_io_free(struct nvfs_io *nvfsio, long res)
+void nvfs_io_free(nvfs_io_t* nvfsio, long res)
 {
 	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(nvfsio,
 					struct nvfs_io_mgroup, nvfsio);
 	struct nvfs_gpu_args *gpu_info = &nvfs_mgroup->gpu_info;
+	bool sync = 0;
 
 	nvfs_dbg("%s:%d IO State %s nvfsio :%p\n",
 			__func__,
@@ -692,34 +747,43 @@ static void nvfs_io_free(struct nvfs_io *nvfsio, long res)
 
 	if (nvfsio->op == WRITE) {
 		if (res >= 0) {
-			if (nvfs_rw_stats_enabled)
+			if (nvfsio->rw_stats_enabled)
 				nvfs_stat64(&nvfs_n_writes_ok);
         	} else {
 			nvfs_stat(&nvfs_n_write_err);
 		}
 
-		if (nvfs_rw_stats_enabled)
+		if (nvfsio->rw_stats_enabled)
 			nvfs_stat_d(&nvfs_n_op_writes);
 	} else {
 		if (res >= 0) {
-			if (nvfs_rw_stats_enabled)
+			if (nvfsio->rw_stats_enabled)
 				nvfs_stat64(&nvfs_n_reads_ok);
 		} else {
 			nvfs_stat(&nvfs_n_read_err);
 		}
 
-		if (nvfs_rw_stats_enabled) {
+		if (nvfsio->rw_stats_enabled) {
 			nvfs_stat_d(&nvfs_n_op_reads);
 		}
 	}
 
 	fdput(nvfsio->fd);
 
-	nvfs_transit_state(gpu_info, IO_IN_PROGRESS, IO_READY);
 
+	//Because the below combination of mgroup put and transit state can
+	//free up the mgroup, it's better to catch the sync state in a local variable
+	//so that we do not access any junk memory.
+	sync = nvfsio->sync;
+
+	nvfs_mgroup_put(nvfs_mgroup);
+	nvfs_transit_state(gpu_info, sync, IO_IN_PROGRESS, IO_READY);
 	// Do not use nvfsio object after we update the end fence page
 	// for user-space
-	if (!nvfsio->sync) {
+	
+	//For Async case, it's certain that mgroup wouldn't have been freed and hence 
+	//we can mark the state Async state as Done after mgroup put as well
+	if (!sync) {
 		void *kaddr = kmap_atomic(gpu_info->end_fence_page);
 		nvfs_ioctl_metapage_ptr_t mpage_ptr =
 				(nvfs_ioctl_metapage_ptr_t) kaddr;
@@ -731,8 +795,6 @@ static void nvfs_io_free(struct nvfs_io *nvfsio, long res)
 		nvfs_dbg("Async - nvfs_io complete. res %ld\n",
 				res);
 	}
-
-	nvfs_mgroup_put(nvfs_mgroup);
 }
 
 /*
@@ -740,7 +802,7 @@ static void nvfs_io_free(struct nvfs_io *nvfsio, long res)
  */
 static void nvfs_io_complete(struct kiocb *kiocb, long res, long res2)
 {
-	struct nvfs_io *nvfsio = container_of(kiocb, struct nvfs_io, common);
+	nvfs_io_t* nvfsio = container_of(kiocb, struct nvfs_io, common);
 	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(nvfsio,
 						struct nvfs_io_mgroup,
 						nvfsio);
@@ -749,40 +811,40 @@ static void nvfs_io_complete(struct kiocb *kiocb, long res, long res2)
         nvfs_mgroup_check_and_set(nvfs_mgroup, NVFS_IO_DONE, res>=0, true);
         res = nvfsio->ret;
 
-	if (nvfsio->common.ki_flags & IOCB_WRITE) {
-		struct file *file = kiocb->ki_filp;
+        if (nvfsio->common.ki_flags & IOCB_WRITE) {
+                struct file *file = kiocb->ki_filp;
 
-		if (S_ISREG(file_inode(file)->i_mode))
-			__sb_writers_acquired(file_inode(file)->i_sb,
-					SB_FREEZE_WRITE);
-		file_end_write(file);
+                if (S_ISREG(file_inode(file)->i_mode))
+                        __sb_writers_acquired(file_inode(file)->i_sb,
+                                        SB_FREEZE_WRITE);
+                file_end_write(file);
 
-        if (res < 0)
-            nvfs_stat(&nvfs_n_read_iostate_err);
-        else if (nvfs_rw_stats_enabled) {
-            nvfs_stat64_add(res, &nvfs_n_write_bytes);
-            nvfs_update_write_throughput(res,
-                    &nvfs_write_bytes_per_sec);
+                if (res < 0)
+                        nvfs_stat(&nvfs_n_write_iostate_err);
+                else if (nvfsio->rw_stats_enabled) {
+                        nvfs_stat64_add(res, &nvfs_n_write_bytes);
+                        nvfs_update_write_throughput(res,
+                                        &nvfs_write_bytes_per_sec);
 
-            nvfs_update_write_latency(ktime_us_delta(ktime_get(),
-                        nvfsio->start_io),
-                    &nvfs_write_latency_per_sec);
+                        nvfs_update_write_latency(ktime_us_delta(ktime_get(),
+                                                nvfsio->start_io),
+                                        &nvfs_write_latency_per_sec);
+                }
+
+        } else {
+
+                if (res < 0)
+                        nvfs_stat(&nvfs_n_read_iostate_err);
+                else if (nvfsio->rw_stats_enabled) {
+                        nvfs_stat64_add(res, &nvfs_n_read_bytes);
+                        nvfs_update_read_throughput(res,
+                                        &nvfs_read_bytes_per_sec);
+
+                        nvfs_update_read_latency(ktime_us_delta(ktime_get(),
+                                                nvfsio->start_io),
+                                        &nvfs_read_latency_per_sec);
+                }
         }
-
-	} else {
-
-        if (res < 0)
-            nvfs_stat(&nvfs_n_write_iostate_err);
-        else if (nvfs_rw_stats_enabled) {
-            nvfs_stat64_add(res, &nvfs_n_read_bytes);
-            nvfs_update_read_throughput(res,
-                    &nvfs_read_bytes_per_sec);
-
-            nvfs_update_read_latency(ktime_us_delta(ktime_get(),
-                        nvfsio->start_io),
-                    &nvfs_read_latency_per_sec);
-        }
-	}
 
 	if (!nvfsio->sync)
 		nvfs_io_free(nvfsio, res);
@@ -793,7 +855,7 @@ static void nvfs_io_complete(struct kiocb *kiocb, long res, long res2)
 
 static inline ssize_t nvfs_io_ret(struct kiocb *req, ssize_t ret)
 {
-	struct nvfs_io *nvfsio = container_of(req,
+	nvfs_io_t* nvfsio = container_of(req,
 					struct nvfs_io, common);
 
 	switch (ret) {
@@ -818,10 +880,10 @@ static inline ssize_t nvfs_io_ret(struct kiocb *req, ssize_t ret)
 				ret = PTR_ERR(req->private);
 				if(ret != -EOPNOTSUPP) {
 					nvfs_err("%s:%d IO failed with %ld\n",
-                            	__func__, __LINE__, ret); 
+                            	__func__, __LINE__, ret);
 				} else {
 					nvfs_dbg("%s:%d IO failed with %ld\n",
-                            	__func__, __LINE__, ret); 
+                            	__func__, __LINE__, ret);
 
 				}
 			} else
@@ -885,7 +947,7 @@ int rw_verify_area(int read_write, struct file *file,
                 if (!unsigned_offsets(file))
                         return retval;
         }
-
+#ifdef CONFIG_MANDATORY_FILE_LOCKING
         if (unlikely(inode->i_flctx && mandatory_lock(inode))) {
                 retval = locks_mandatory_area(inode, file, pos,
 				pos + count - 1,
@@ -893,6 +955,7 @@ int rw_verify_area(int read_write, struct file *file,
                 if (retval < 0)
                         return retval;
         }
+#endif
 
 #ifdef HAVE_SECURITY_FILE_PERMISSION
         nvfs_dbg("Checking file permission.... for %s\n",
@@ -923,7 +986,7 @@ static inline bool nvfs_is_sparse(struct file *f)
  */
 static ssize_t
 nvfs_direct_io(int op, struct file *filp, char __user *buf,
-		size_t len, loff_t ppos, struct nvfs_io *nvfsio)
+		size_t len, loff_t ppos, nvfs_io_t* nvfsio)
 {
         struct iovec iov = { .iov_base = buf, .iov_len = len };
         struct iov_iter iter;
@@ -969,7 +1032,7 @@ nvfs_direct_io(int op, struct file *filp, char __user *buf,
 		return ret;
 	}
 
-        nvfs_iov_iter_init(&iter, op, &iov, 1, len);
+        iov_iter_init(&iter, op, &iov, 1, len);
 
 //TODO: If the config is not present fallback to vfs_read/vfs_write
 #ifdef HAVE_CALL_READ_WRITE_ITER
@@ -1037,7 +1100,6 @@ static int nvfs_close(struct inode *inode, struct file *file)
 		nvfs_dbg("Unregistering dma ops and nvidia p2p ops\n");
 	}
 	mutex_unlock(&nvfs_module_mutex);
-
 	nvfs_stat_d(&nvfs_n_op_process);
 	nvfs_dbg("nvfs_close\n");
 	return 0;
@@ -1086,8 +1148,13 @@ static int nvfs_get_endfence_page(nvfs_ioctl_map_t *input_param,
         else
 #endif
 	{
+#ifdef HAVE_PIN_USER_PAGES_FAST
+		ret = pin_user_pages_fast((unsigned long) end_fence, 1, 1,
+			&gpu_info->end_fence_page);
+#else
 		ret = get_user_pages_fast((unsigned long) end_fence, 1, 1,
 			&gpu_info->end_fence_page);
+#endif
 	}
 
 	if (ret != 1) {
@@ -1104,7 +1171,7 @@ out:
 /*
  * Unmap the physcial pages previously mapped.
  */
-static void nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
+static int nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
 {
 	int ret = 0;
 
@@ -1121,7 +1188,7 @@ static void nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
 			BUG_ON(pci_dev_mapping->dma_mapping == NULL);
 			BUG_ON((
 			atomic_read(&gpu_info->dma_mapping_in_progress) != 0));
-
+			
 			ret = nvfs_nvidia_p2p_dma_unmap_pages(
 					pci_dev_mapping->pci_dev,
 					gpu_info->page_table,
@@ -1130,7 +1197,9 @@ static void nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
 				nvfs_err("%s:%d error while invoking "
 						"unmap pages\n",
 						__func__, __LINE__);
+				return ret;
 			}
+
 			hash_del(&pci_dev_mapping->hentry);	
 			kfree(pci_dev_mapping);
 			pci_dev_mapping = NULL;
@@ -1142,14 +1211,15 @@ static void nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
 			nvfs_update_free_gpustat(gpu_info);
 
 			ret = nvfs_nvidia_p2p_put_pages(0, 0, gpu_page_start,
-						gpu_info->page_table);
+					gpu_info->page_table);
 			if (ret) {
 				nvfs_err("%s:%d error while calling "
-					"put_pages\n",
-					__func__, __LINE__);
+						"put_pages\n",
+						__func__, __LINE__);
 			}
 		}
 	}
+	return ret;
 }
 
 static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
@@ -1171,7 +1241,7 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 
 	init_waitqueue_head(&gpu_info->callback_wq);
 
-	if(!nvfs_transit_state(gpu_info, IO_FREE, IO_INIT)) {
+	if(!nvfs_transit_state(gpu_info, true, IO_FREE, IO_INIT)) {
 		nvfs_err("%s:%d gpu_info is in invalid state %d "
 			 "mgroup_ref %d mgroup %p\n",
 			 __func__, __LINE__,
@@ -1197,15 +1267,15 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 		(input_param->sbuf_block * PAGE_SIZE) <
 		(gpuvaddr - gpu_virt_start + gpu_buf_len))
         {
-		nvfs_err("invalid shadow buf size provided %ld\n ",
-				input_param->sbuf_block * PAGE_SIZE);
+		nvfs_err("invalid shadow buf size provided %ld, gpu_buf_len: %lld, gpuvaddr: %llx \n",
+				input_param->sbuf_block * PAGE_SIZE, gpu_buf_len, gpuvaddr);
 		goto error;
         }
 
 	rounded_size = round_up((gpu_virt_end - gpu_virt_start + 1),
 				GPU_PAGE_SIZE);
 
-	nvfs_dbg("gpu_addr %llx cpu_addr %llx\n",
+	nvfs_dbg("gpu_addr 0x%llx cpu_addr 0x%llx\n",
 			input_param->gpuvaddr,
 			input_param->cpuvaddr);
 
@@ -1218,7 +1288,7 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 	atomic_set(&gpu_info->dma_mapping_in_progress, 0);
 	hash_init(gpu_info->buckets);
 
-	nvfs_dbg("Invoking p2p_get_pages page_virt_start %lx length %lx "
+	nvfs_dbg("Invoking p2p_get_pages pages (0x%lx - 0x%lx) "
 		 "rounded size %lx\n",
 		 (unsigned long)gpu_virt_start,
 		 (unsigned long)gpu_virt_end, (unsigned long)rounded_size);
@@ -1236,13 +1306,13 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 		goto error;
 	}
 
-        nvfs_dbg("page table entries: %d\n", gpu_info->page_table->entries);
+        nvfs_dbg("GPU page table entries: %d\n", gpu_info->page_table->entries);
 
 	for (i = 0; i < gpu_info->page_table->entries - 1; i++) {
-            nvfs_dbg("Physical page[%d]=0x%016llx\n",
+            nvfs_dbg("GPU Physical page[%d]=0x%016llx\n",
                 i, gpu_info->page_table->pages[i]->physical_address);
 
-	    if ((gpu_info->page_table->pages[i]->physical_address + GPU_PAGE_SIZE) != 
+	    if ((gpu_info->page_table->pages[i]->physical_address + GPU_PAGE_SIZE) !=
 			    gpu_info->page_table->pages[i + 1]->physical_address)
 		    n_phys_chunks += 1;
         }
@@ -1293,7 +1363,7 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 unpin_gpu_pages:
 	// If we received callback by this time, then
 	// we need to notify the callback
-	if(!nvfs_transit_state(gpu_info, IO_INIT, IO_FREE)) {
+	if(!nvfs_transit_state(gpu_info, true, IO_INIT, IO_FREE)) {
 			nvfs_err("%s:%d: Transition failed mgroup_ref %d mgroup %p\n",
 			__func__, __LINE__, atomic_read(&nvfs_mgroup->ref),
 			nvfs_mgroup);
@@ -1304,10 +1374,33 @@ error:
 	return ret;
 }
 
-void nvfs_free_gpu_info(struct nvfs_gpu_args* gpu_info)
+bool nvfs_free_gpu_info(struct nvfs_gpu_args* gpu_info, bool from_dma)
 {
-	nvfs_unpin_gpu_pages(gpu_info);
+	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(gpu_info,
+			struct nvfs_io_mgroup,
+			gpu_info);
+	nvfs_dbg("%s state = %s\n", __func__, nvfs_io_state_status(atomic_read(&gpu_info->io_state))); 
 	
+
+        //Setting the state to IO_UNPIN_PAGES_ALREADY_INVOKED first, so that
+        //if nvfs_get_pages_free_callback is waiting on this state it 
+        //can be immediately woken up. The put pages blocks until nnvfs_get_pages_free_callback
+        //returns, so if we set this state afterwards, the callback will wait 
+        //for the below state to be set which will never be set
+        //As a result we will be blocked and eventually this will cause a deadlock.
+        //The nvfs_get_pages_free_callback will wait for 1 us after seeing this state and
+        //then return. This 5us gives us an extra cushion that put pages will be invoked in 
+        //that time frame (but there is no guarantee). If put pages gets invoked before callback
+        //returns then p2p put pages will return successfully. If p2p put pages fails to get invoked 
+        //in that 1us, then behaviour of put pages is unknown(it might crash) 
+	atomic_set(&gpu_info->io_state, IO_UNPIN_PAGES_ALREADY_INVOKED);
+	if(nvfs_unpin_gpu_pages(gpu_info) != 0) {
+		nvfs_dbg("nvfs_unpin_gpu_pages failed %p to %s"
+			 "and returning\n", 
+			 nvfs_mgroup, 
+		  	 nvfs_io_state_status(IO_UNPIN_PAGES_ALREADY_INVOKED));
+
+	}		
 	// Reference taken during nvfs_map()
 	nvfs_free_put_endfence_page(gpu_info);
 	nvfs_put_ops();
@@ -1315,10 +1408,24 @@ void nvfs_free_gpu_info(struct nvfs_gpu_args* gpu_info)
 	if (nvfs_count_ops() == 0) {
 		mutex_lock(&nvfs_module_mutex);
                 // check if the count has not gone up
-		if (nvfs_count_ops() == 0)
-			nvfs_blk_unregister_dma_ops();
+		if (nvfs_count_ops() == 0) {
+                        
+                        //If put is called from dma map/unmap, then we do not want to unregister the 
+                        //dma_ops because it can cause a dead lock where unregister is waiting for a 
+                        //put and that put won't happen until we return from here
+			if(!from_dma) {
+				nvfs_blk_unregister_dma_ops();
+			} else {
+				nvfs_info("%s Not calling nvfs_blk_unregister_dma_ops from"
+					  "nvfs_free_gpu_info because put is called from map/unmap dma"
+				 	  "for mgroup %p\n",
+					   __func__,
+					    nvfs_mgroup);
+			}
+		}
 		mutex_unlock(&nvfs_module_mutex);
 	}
+	return 0;
 }
 
 static int nvfs_map_gpu_info(nvfs_ioctl_map_t *input_param,
@@ -1375,7 +1482,7 @@ static int nvfs_map(nvfs_ioctl_map_t *input_param)
 	if (ret)
 		goto error;
 
-	if (!nvfs_transit_state(gpu_info, IO_INIT, IO_READY)) {
+	if (!nvfs_transit_state(gpu_info, true, IO_INIT, IO_READY)) {
 		nvfs_err("%s:%d: Transition failed mgroup_ref %d\n",
 			__func__, __LINE__, atomic_read(&nvfs_mgroup->ref));
 		goto error;
@@ -1423,58 +1530,55 @@ static inline int nvfs_check_file_permissions(int op, struct file *file, bool al
 	return 0;
 }
 
-
 /*
  * Setup nvfsio for reach READ/WRITE IOCTL operation.
  */
-static struct nvfs_io* nvfs_io_init(int op,
-			nvfs_ioctl_param_union *input_param)
+struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 {
 	int ret = -EINVAL;
 	struct nvfs_io* nvfsio = NULL;
 	struct fd fd;
 	struct nvfs_gpu_args *gpu_info = NULL;
-	nvfs_file_args_t *file_args = &(input_param->ioargs.file_args);
+	nvfs_file_args_t *file_args = &(ioargs->file_args);
 	u64 va_offset = 0;
         u64 gpu_virt_start = 0;
 	struct inode *inode;
 	nvfs_mgroup_ptr_t nvfs_mgroup;
 	uint64_t devptroff = 0;
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
-	uint32_t rdma_segment = 0;
 	uint32_t shadow_buf_size = 0;
 	ssize_t rdma_seg_offset = 0;
 #endif
-	if (input_param->ioargs.offset < 0) {
-		nvfs_err("bad file offset %lld\n", input_param->ioargs.offset);
+	if (ioargs->offset < 0) {
+		nvfs_err("bad file offset %lld\n", ioargs->offset);
 		return ERR_PTR(ret);
 	}
 
-	if (offset_in_page(input_param->ioargs.offset) ||
-			offset_in_page(input_param->ioargs.size)) {
+	if (offset_in_page(ioargs->offset) ||
+			offset_in_page(ioargs->size)) {
 		nvfs_err("%s:%d offset = %lld size = %llu not sector aligned\n",
 				__func__, __LINE__,
-				input_param->ioargs.offset,
-				input_param->ioargs.size);
+				ioargs->offset,
+				ioargs->size);
 		return ERR_PTR(ret);
 	}
 
-	if (input_param->ioargs.offset > S64_MAX - (long long)input_param->ioargs.size) {
+	if (ioargs->offset > S64_MAX - (long long)ioargs->size) {
 		nvfs_err("Invalid range offset, overflow detected %lld size %llu\n",
-			input_param->ioargs.offset,
-			input_param->ioargs.size);
+			ioargs->offset,
+			ioargs->size);
 		return ERR_PTR(ret);
 	}
 
-	fd = fdget(input_param->ioargs.fd);
+	fd = fdget(ioargs->fd);
 	if (!fd.file) {
 		nvfs_err("%s:%d invalid file descriptor:%d\n",
-				__func__, __LINE__, input_param->ioargs.fd);
+				__func__, __LINE__, ioargs->fd);
 		return ERR_PTR(ret);
 	}
 
 	ret = nvfs_check_file_permissions(op, fd.file,
-                                       input_param->ioargs.allowreads);
+                                       ioargs->allowreads);
 	if (ret) {
 		nvfs_err("Invalid file permissions\n");
 		goto fd_put;
@@ -1543,7 +1647,7 @@ static struct nvfs_io* nvfs_io_init(int op,
 	}
 
 
-	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(input_param->ioargs.cpuvaddr);
+	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(ioargs->cpuvaddr);
 	if (nvfs_mgroup == NULL) {
 		ret = -EINVAL;
 		nvfs_err("%s:%d Invalid addr passed\n",
@@ -1552,7 +1656,7 @@ static struct nvfs_io* nvfs_io_init(int op,
 	}
 
 	gpu_info = &nvfs_mgroup->gpu_info;
-	if(!nvfs_transit_state(gpu_info, IO_READY, IO_IN_PROGRESS)) {
+	if(!nvfs_transit_state(gpu_info, (ioargs->sync == 1), IO_READY, IO_IN_PROGRESS)) {
 		ret = -EBUSY;
 		nvfs_dbg("Teardown in progress\n");
 		goto mgroup_put;
@@ -1568,10 +1672,10 @@ static struct nvfs_io* nvfs_io_init(int op,
 	memset(nvfsio, 0, sizeof(struct nvfs_io));
 
 	nvfsio->start_io = ktime_get();
-	nvfsio->cpuvaddr = (char __user *) input_param->ioargs.cpuvaddr;
-	nvfsio->sync = (input_param->ioargs.sync == 1);
-	nvfsio->hipri = (input_param->ioargs.hipri == 1);
-	nvfsio->use_rkeys = (input_param->ioargs.use_rkeys == 1);
+	nvfsio->cpuvaddr = (char __user *) ioargs->cpuvaddr;
+	nvfsio->sync = (ioargs->sync == 1);
+	nvfsio->hipri = (ioargs->hipri == 1);
+	nvfsio->use_rkeys = (ioargs->use_rkeys == 1);
         nvfsio->op  = op;
 
 #ifndef SIMULATE_INLINE_READS
@@ -1583,8 +1687,8 @@ static struct nvfs_io* nvfs_io_init(int op,
 #endif
 
 	nvfsio->fd = fd;
-	nvfsio->fd_offset = input_param->ioargs.offset;
-	nvfsio->length = input_param->ioargs.size;
+	nvfsio->fd_offset = ioargs->offset;
+	nvfsio->length = ioargs->size;
 
         nvfsio->check_sparse = false;
         nvfsio->state = NVFS_IO_META_CLEAN;
@@ -1592,17 +1696,17 @@ static struct nvfs_io* nvfs_io_init(int op,
 
 	//XXX
 	nvfs_dbg("nvfsio init nvfsio :0x%p fd_offset :%llu use rkey: %d\n",
-		nvfsio, input_param->ioargs.offset, nvfsio->use_rkeys);
+		nvfsio, ioargs->offset, nvfsio->use_rkeys);
 
 	if(!nvfsio->sync) {
-		if (input_param->ioargs.end_fence_value == 0) {
+		if (ioargs->end_fence_value == 0) {
 			nvfs_err("end_fence_value should be positive\n");
 			ret = -EINVAL;
 			goto mgroup_put;
 		}
-		nvfsio->end_fence_value = input_param->ioargs.end_fence_value;
+		nvfsio->end_fence_value = ioargs->end_fence_value;
 		nvfs_dbg("nvfs_io_init. Setting end fence value %lld\n",
-				input_param->ioargs.end_fence_value);
+				ioargs->end_fence_value);
 	}
 
 	nvfsio->retrycnt = 0;
@@ -1620,14 +1724,14 @@ static struct nvfs_io* nvfs_io_init(int op,
 	}
 
         // if offset > (size mapped - len), return error
-	if ((gpu_info->gpu_buf_len < (u64)input_param->ioargs.size) ||
+	if ((gpu_info->gpu_buf_len < (u64)ioargs->size) ||
 		(file_args->devptroff >
-		(gpu_info->gpu_buf_len - (u64)input_param->ioargs.size)))
+		(gpu_info->gpu_buf_len - (u64)ioargs->size)))
         {
 		nvfs_err("invalid iosize, devptroff :%lu "
 			 "size %lu > buf_len %lu\n",
 			 (unsigned long)devptroff,
-			 (unsigned long)input_param->ioargs.size,
+			 (unsigned long)ioargs->size,
 			 (unsigned long)gpu_info->gpu_buf_len);
 		ret = -EINVAL;
                 goto mgroup_put;
@@ -1637,10 +1741,10 @@ static struct nvfs_io* nvfs_io_init(int op,
 	// the size should be (GPU_PAGE_SIZE - gpu_page_offset)
 	nvfsio->gpu_page_offset = va_offset & (GPU_PAGE_SIZE - 1);
 	if (nvfsio->gpu_page_offset &&
-	    (input_param->ioargs.size >
+	    (ioargs->size >
 	    (GPU_PAGE_SIZE - nvfsio->gpu_page_offset))) {
 		nvfs_err("invalid size, gpu_page_offset %llu size %llu \n",
-			nvfsio->gpu_page_offset, input_param->ioargs.size);
+			nvfsio->gpu_page_offset, ioargs->size);
 		ret = -EINVAL;
 		goto mgroup_put;
 	}
@@ -1655,23 +1759,11 @@ static struct nvfs_io* nvfs_io_init(int op,
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT	
 	//If use_rkey is set, then set the appropriate segments for this IO
 	if(nvfsio->use_rkeys) {
-		shadow_buf_size = nvfs_mgroup->nvfs_pages_count * PAGE_SIZE; 
-		rdma_segment = va_offset / shadow_buf_size;
+		shadow_buf_size = nvfs_mgroup->nvfs_pages_count * PAGE_SIZE;
 		rdma_seg_offset = va_offset % shadow_buf_size;
-		if((nvfs_mgroup->rdma_reg_info.nents <= MAX_RDMA_REGS_SUPPORTED) &&
-				(rdma_segment < nvfs_mgroup->rdma_reg_info.nents)) {
-			nvfs_set_curr_rdma_seg_to_mgroup(nvfs_mgroup, rdma_segment);
-			nvfs_mgroup->rdma_reg_info.curr_ent = rdma_segment;
-			nvfsio->rdma_seg_offset = rdma_seg_offset;
-			nvfs_dbg("%s: set curr rdma segment num %u, segment offset = %lu\n", 
-					__func__, rdma_segment, rdma_seg_offset);
-		} else {
-			nvfs_err("Invalid rdma segment: %d or total entries: %d\n", 
-					rdma_segment,
-					nvfs_mgroup->rdma_reg_info.nents);
-			ret = -EINVAL;
-			goto mgroup_put;
-		}
+		nvfsio->rdma_seg_offset = rdma_seg_offset;
+		nvfs_dbg("%s: set curr rdma segment offset = %lu\n",
+			__func__, rdma_seg_offset);
 	}
 #endif
 	return nvfsio;
@@ -1681,7 +1773,7 @@ mgroup_put:
 		__func__, __LINE__,
 		 nvfs_io_state_status(IO_IN_PROGRESS),
 		 nvfs_io_state_status(IO_READY));
-	nvfs_transit_state(gpu_info, IO_IN_PROGRESS, IO_READY);
+	nvfs_transit_state(gpu_info, (ioargs->sync == 1), IO_IN_PROGRESS, IO_READY);
 
 	nvfs_dbg("*****nvfs_io_init failed.. put calling ref %d\n",
 			atomic_read(&nvfs_mgroup->ref));
@@ -1692,7 +1784,7 @@ fd_put:
 }
 
 static int flush_dirty_pages(struct file *file,
-		loff_t offset, size_t size, struct nvfs_io *nvfsio)
+		loff_t offset, size_t size, nvfs_io_t* nvfsio)
 {
 	struct inode *inode = file_inode(file);
 	loff_t endbyte;
@@ -1814,10 +1906,10 @@ done:
 static inline bool nvfs_need_fallocate(struct inode *inode) {
 	unsigned long magic = inode->i_sb->s_magic;
 	return ((magic != NFS_SUPER_MAGIC) &&
-		(magic != LUSTRE_SUPER_MAGIC));
+		(magic != LUSTRE_SUPER_MAGIC) && (magic != BEEGFS_SUPER_MAGIC));
 }
 
-static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
+long nvfs_io_start_op(nvfs_io_t* nvfsio)
 {
 	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(nvfsio,
 						struct nvfs_io_mgroup, nvfsio);
@@ -1827,6 +1919,7 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
         struct inode *inode = file_inode(f);
         loff_t fd_offset = nvfsio->fd_offset;
 	u64 va_offset = 0;
+        int op = nvfsio->op;
         unsigned long shadow_buf_size = (nvfs_mgroup->nvfs_pages_count) *
 						PAGE_SIZE;
 	ssize_t rdma_seg_offset = 0;
@@ -1855,7 +1948,7 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
                             nvfs_err("%s fallocate failed :%ld\n", opstr(op), ret);
                             nvfs_io_free(nvfsio, ret);
                             goto failed;
-                        }    
+                        }
 
                         /* fallocate if the file size is 0*/
                         if (i_size_read(inode) == 0) {
@@ -1886,7 +1979,7 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
 #endif
 	
 	nvfs_dbg("%s rdma offset = %lu\n", __func__, rdma_seg_offset);
-        
+
 	while (bytes_left) {
                 int nr_pages;
                 size_t bytes_issued;
@@ -1910,10 +2003,20 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
                 nvfs_dbg("Num 4k Pages in process address "
 			"nr_pages=%d bytes_left=%lu "
                         "%s bytes_issued=%lu nvfsio 0x%p rdma_seg_offset %lu use_rkey:%d \n",
-                        nr_pages, bytes_left, opstr(op), bytes_issued, nvfsio, 
+                        nr_pages, bytes_left, opstr(op), bytes_issued, nvfsio,
 			rdma_seg_offset, nvfsio->use_rkeys);
 
-                nvfs_mgroup_fill_mpages(nvfs_mgroup, nr_pages);
+                ret = nvfs_mgroup_fill_mpages(nvfs_mgroup, nr_pages);
+		// Check if there are any callbacks or munmaps
+		if (ret < 0) {
+			nvfs_err("%s:%d shadow buffer misaligned for gpu page_offset: 0x%llx bytes_issued: %ld bytes"
+				 " returning -EIO\n",
+				__func__, __LINE__, nvfsio->gpu_page_offset, bytes_issued);
+			ret = -EIO;
+			nvfs_io_free(nvfsio, ret);
+			goto failed;
+		}
+
                 nvfsio->state = NVFS_IO_META_CLEAN;
                 nvfsio->ret = -EINVAL;
                 if(op == READ && nvfs_is_sparse(f)) {
@@ -1934,7 +2037,7 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
                         ret = -EINVAL;
 
                 if (ret < 0 && ret != -EIOCBQUEUED) {
-			//For IBM GPFS this can happen frequently and hence instead of logging to error, 
+			//For IBM GPFS this can happen frequently and hence instead of logging to error,
 			//we will log to debug
 			if((ret == -EOPNOTSUPP) && (nvfsio->use_rkeys)) {
                         	nvfs_dbg("%s IO failed :%ld\n", opstr(op), ret);
@@ -1984,14 +2087,8 @@ static long nvfs_start_io_op(struct nvfs_io *nvfsio, int op)
                                 nvfsio->cur_gpu_base_index += va_offset >> GPU_PAGE_SHIFT;
 				
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT	
-				//Set the appropriate rdma registration, if using RDMA rkeys for IO
+				// clear the rdma_seg_offset
 				if(nvfsio->use_rkeys) {
-					nvfs_mgroup->rdma_reg_info.curr_ent++;
-					BUG_ON(nvfs_mgroup->rdma_reg_info.curr_ent >= MAX_RDMA_REGS_SUPPORTED);
-					nvfs_set_curr_rdma_seg_to_mgroup(nvfs_mgroup, 
-							nvfs_mgroup->rdma_reg_info.curr_ent);
-					nvfs_dbg("%s: set curr rdma segment num %d\n", 
-							__func__, nvfs_mgroup->rdma_reg_info.curr_ent);
 					rdma_seg_offset = 0;
 					nvfsio->rdma_seg_offset = 0;
 				}
@@ -2034,7 +2131,10 @@ static inline int get_rwop(unsigned int ioctl_num)
 		return READ;
 	else if (ioctl_num == NVFS_IOCTL_WRITE)
 		return WRITE;
-
+#ifdef NVFS_BATCH_SUPPORT
+	else if (ioctl_num == NVFS_IOCTL_BATCH_IO)
+		return READ;
+#endif
 	return -1;
 }
 
@@ -2068,50 +2168,56 @@ static long nvfs_ioctl(struct file *file, unsigned int ioctl_num,
 	case NVFS_IOCTL_READ:
 	case NVFS_IOCTL_WRITE:
 	{
-                struct nvfs_io *nvfsio = NULL;
+                nvfs_io_t* nvfsio = NULL;
 		int op = get_rwop(ioctl_num);
 		const char *io = (op == READ) ? "Read" : "Write";
+                bool rw_stats_enabled = 0;
 
+                if(nvfs_rw_stats_enabled > 0) {
+                    rw_stats_enabled = 1;
+                }
+		
 		if(op == READ) {
-			if (nvfs_rw_stats_enabled) {
+			if (rw_stats_enabled) {
 				nvfs_stat64(&nvfs_n_reads);
 				nvfs_stat(&nvfs_n_op_reads);
 			}
 			nvfs_dbg("nvfs ioctl %s invoked\n", io);
 		} else {
-			if (nvfs_rw_stats_enabled) {
+			if (rw_stats_enabled) {
 				nvfs_stat64(&nvfs_n_writes);
 				nvfs_stat(&nvfs_n_op_writes);
 			}
 			nvfs_dbg("nvfs ioctl %s invoked\n", io);
 		}
 
-                nvfsio = nvfs_io_init(op, &local_param);
+		nvfsio = nvfs_io_init(op, &local_param.ioargs);
 
 		if (IS_ERR(nvfsio)) {
 			local_param.ioargs.ioctl_return = PTR_ERR(nvfsio);
 			if (copy_to_user((void *) ioctl_param,
-					(void*) &local_param,
-					sizeof(nvfs_ioctl_param_union))) {
+						(void*) &local_param,
+						sizeof(nvfs_ioctl_param_union))) {
 				nvfs_err("%s:%d copy_to_user failed\n", __func__, __LINE__);
 			}
 			if(op == READ) {
 				nvfs_stat(&nvfs_n_read_err);
-				if (nvfs_rw_stats_enabled)
+				if (rw_stats_enabled)
 					nvfs_stat_d(&nvfs_n_op_reads);
 				nvfs_err("nvfs ioctl %s ret = %ld\n",
-					io, PTR_ERR(nvfsio));
+						io, PTR_ERR(nvfsio));
 			} else {
 				nvfs_stat(&nvfs_n_write_err);
-				if (nvfs_rw_stats_enabled)
+				if (rw_stats_enabled)
 					nvfs_stat_d(&nvfs_n_op_writes);
 				nvfs_err("nvfs ioctl %s ret = %ld\n",
-					io, PTR_ERR(nvfsio));
+						io, PTR_ERR(nvfsio));
 			}
 			return -1;
 		}
+                nvfsio->rw_stats_enabled = rw_stats_enabled;
 
-                local_param.ioargs.ioctl_return = nvfs_start_io_op(nvfsio, op);
+                local_param.ioargs.ioctl_return = nvfs_io_start_op(nvfsio);
                 if (copy_to_user((void *) ioctl_param, (void*) &local_param,
 					sizeof(nvfs_ioctl_param_union))) {
 			local_param.ioargs.ioctl_return = -EFAULT;
@@ -2122,6 +2228,59 @@ static long nvfs_ioctl(struct file *file, unsigned int ioctl_num,
 
                 return ((local_param.ioargs.ioctl_return < 0) ? -1 : 0);
 	}
+#ifdef NVFS_BATCH_SUPPORT
+        case NVFS_IOCTL_BATCH_IO:
+        {
+                nvfs_batch_io_t* nvfs_batch = NULL;
+                bool rw_stats_enabled = 0;
+                
+                if(nvfs_rw_stats_enabled > 0) {
+                        rw_stats_enabled = 1;
+                }
+                nvfs_dbg("nvfs batch ioctl invoked\n");
+                if (rw_stats_enabled) {
+                        nvfs_stat64(&nvfs_n_batches);
+                        nvfs_stat(&nvfs_n_op_batches);
+                }
+                nvfs_batch = nvfs_io_batch_init(&local_param);
+
+                if (IS_ERR(nvfs_batch)) {
+                        local_param.ioargs.ioctl_return = PTR_ERR(nvfs_batch);
+                        if (copy_to_user((void *) ioctl_param,
+                                                (void*) &local_param,
+                                                sizeof(nvfs_ioctl_param_union))) {
+                                nvfs_err("%s:%d copy_to_user failed\n", __func__, __LINE__);
+                        }
+                        nvfs_stat(&nvfs_n_batch_err);
+                        if (rw_stats_enabled)
+                                nvfs_stat_d(&nvfs_n_op_batches);
+                        nvfs_err("nvfs batch ioctl ret = %ld\n", PTR_ERR(nvfs_batch));
+			return -1;
+		}
+
+                local_param.ioargs.ioctl_return = nvfs_io_batch_submit(nvfs_batch);
+                nvfs_batch = NULL;
+
+                if(local_param.ioargs.ioctl_return < 0) {
+                        nvfs_stat(&nvfs_n_batch_err);
+                } else {
+                        nvfs_stat64(&nvfs_n_batches_ok);
+                }
+                if (copy_to_user((void *) ioctl_param, (void*) &local_param,
+					sizeof(nvfs_ioctl_param_union))) {
+			local_param.ioargs.ioctl_return = -EFAULT;
+                        nvfs_stat(&nvfs_n_batch_err);
+			nvfs_err("%s:%d copy_to_user failed\n", __func__, __LINE__);
+		} else {
+                        nvfs_dbg("nvfs batch ioctl ret = %llu\\n", local_param.ioargs.ioctl_return);
+                }
+
+                if (rw_stats_enabled)
+                        nvfs_stat_d(&nvfs_n_op_batches);
+
+                return ((local_param.ioargs.ioctl_return < 0) ? -1 : 0);
+        }
+#endif
 	case NVFS_IOCTL_MAP:
 	{
 		int ret;
@@ -2159,12 +2318,12 @@ static long nvfs_ioctl(struct file *file, unsigned int ioctl_num,
 		ret = nvfs_set_rdma_reg_info_to_mgroup(
 					(nvfs_ioctl_set_rdma_reg_info_args_t*)&local_param.rdma_set_reg_info);
 		if(ret) {
-			nvfs_err("nvfs_set_rdma_device_info_to_mgroup() returned %d\n", 
+			nvfs_err("nvfs_set_rdma_device_info_to_mgroup() returned %d\n",
 					ret);
 			return ret;
 		}
 		
-		nvfs_dbg("NVFS_IOCTL_SET_RDMA_DEVICE_INFO ioctl success\n"); 
+		nvfs_dbg("NVFS_IOCTL_SET_RDMA_DEVICE_INFO ioctl success\n");
 		return 0;
 #else
 		return -1;
@@ -2291,14 +2450,11 @@ static int __init nvfs_init(void)
 	nvfs_init_debugfs();
 #endif
 	nvfs_stat_init();
-#ifdef CONFIG_MOFED
-        if(nvfs_peer_client_init())
-                goto error;
-#endif
 #ifdef TEST_DISCONTIG_ADDR
 	nvfs_init_simulated_address();
 #endif
 	nvfs_fill_gpu2peer_distance_table_once();
+
 	return 0;
 
 error:
@@ -2315,9 +2471,6 @@ static void __exit nvfs_exit(void)
 	int i;
 
 	atomic_set(&nvfs_shutdown, 1);
-#ifdef CONFIG_MOFED
-	nvfs_peer_client_exit();
-#endif
 	do {
 		wait_event_interruptible_timeout(wq,
 			(nvfs_count_ops() == 0),
@@ -2341,6 +2494,7 @@ static void __exit nvfs_exit(void)
 module_init(nvfs_init);
 module_exit(nvfs_exit);
 
+MODULE_VERSION(TO_STR(MOD_VERS(NVFS_DRIVER_MAJOR_VERSION, NVFS_DRIVER_MINOR_VERSION, NVFS_DRIVER_PATCH_VERSION)));
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("NVIDIA GPUDirect Storage");
 module_param_named(max_devices, nvfs_max_devices, uint, S_IWUSR | S_IRUGO);

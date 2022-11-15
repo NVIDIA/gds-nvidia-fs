@@ -15,6 +15,7 @@
 
 #include <linux/ktime.h>
 #include <linux/version.h>
+#include <linux/namei.h>
 
 #define NVFS_STAT_VERSION		4
 #define BYTES_TO_MB(b) ((b) >> 20ULL)
@@ -52,6 +53,7 @@ extern atomic_t prev_write_throughput;
 
 extern atomic64_t prev_read_latency;
 extern atomic64_t prev_write_latency;
+extern atomic64_t prev_batch_avg_latency;
 
 /*
  * Operation counters - Declaration 
@@ -67,6 +69,10 @@ extern atomic64_t nvfs_read_bytes_per_sec;
 extern atomic_t nvfs_read_ops_per_sec;
 extern atomic64_t nvfs_read_latency_per_sec;
 extern atomic_t nvfs_avg_read_latency;
+
+extern atomic64_t nvfs_n_batches;
+extern atomic64_t nvfs_n_batches_ok;
+extern atomic_t nvfs_n_batch_err;
 
 extern atomic64_t nvfs_n_reads_sparse_files;
 extern atomic64_t nvfs_n_reads_sparse_io;
@@ -84,6 +90,10 @@ extern atomic_t nvfs_write_ops_per_sec;
 extern atomic64_t nvfs_write_latency_per_sec;
 extern atomic_t nvfs_avg_write_latency;
 
+extern atomic_t nvfs_batch_ops_per_sec;
+extern atomic64_t nvfs_batch_submit_latency_per_sec;
+extern atomic_t nvfs_batch_submit_avg_latency;
+
 extern atomic64_t nvfs_n_mmap;
 extern atomic64_t nvfs_n_mmap_ok;
 extern atomic_t nvfs_n_mmap_err;
@@ -94,12 +104,14 @@ extern atomic64_t nvfs_n_maps_ok;
 extern atomic_t nvfs_n_map_err;
 extern atomic64_t nvfs_n_free;
 extern atomic_t nvfs_n_callbacks;
+extern atomic64_t nvfs_n_delayed_frees;
 
 extern atomic64_t nvfs_n_active_shadow_buf_sz;
 extern atomic_t nvfs_n_op_reads;
 extern atomic_t nvfs_n_op_writes;
 extern atomic_t nvfs_n_op_maps;
 extern atomic_t nvfs_n_op_process;
+extern atomic_t nvfs_n_op_batches;
 
 extern atomic_t nvfs_n_err_mix_cpu_gpu;
 extern atomic_t nvfs_n_err_sg_err;
@@ -203,6 +215,8 @@ void nvfs_update_read_latency(unsigned long avg_latency,
 void nvfs_update_write_latency(unsigned long avg_latency,
                                 atomic64_t *stat);
 
+void nvfs_update_batch_latency(unsigned long avg_latency,
+                                atomic64_t *stat);
 void nvfs_update_write_throughput(unsigned long total_bytes,
                                 atomic64_t *stat);
 

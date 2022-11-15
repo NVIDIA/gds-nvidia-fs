@@ -1,8 +1,36 @@
+nvidia-fs (2.14) RELEASE; urgency=low
+ 
+  * Minor bug fixes
+
+ -- Oct 2022
+
+nvidia-fs (2.13) RELEASE; urgency=low
+ 
+  * Minor bug fixes
+
+nvidia-fs (2.12) RELEASE; urgency=low
+ * minor fixes to support newer kernels 
+ --   Mar 2022
+nvidia-fs (2.11) RELEASE; urgency=low
+ * no changes, version bump for minor releases
+ --   Mar 2022
+nvidia-fs (2.10) RELEASE; urgency=low
+ * Enable batch API support for GDS
+ * performance improvements in munmap
+ --   Jan 2022
+nvidia-fs (2.9) RELEASE; urgency=low
+ * Enable MOFEDPeerDirect support using nvidia_peermem.ko
+ --   Mon 15 Nov 2021
+
+nvidia-fs (2.8) RELEASE; urgency=low
+ * Minor bug fixes in stats and GPFS paths
+ --   Thu, 15 Oct 2021
+
 nvidia-fs (2.7) RELEASED; urgency=low
 
  * Add read support for IBM GPFS using userspace RDMA DC transport 
 
- --  Thu, 15 Jun 2021
+ --   Thu, 15 Jun 2021
 
 nvidia-fs (2.6) RELEASED; urgency=low
 
@@ -10,7 +38,7 @@ nvidia-fs (2.6) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- --  Thu, 25 Feb 2021
+ --   Thu, 25 Feb 2021
 
 nvidia-fs (2.5) RELEASED; urgency=low
 
@@ -29,19 +57,19 @@ nvidia-fs (2.3) RELEASED; urgency=low
 
   * Add support for Scaleflux Block Devices
 
- -- Mon, 02 Nov 2020
+ --   Thu, 15 Oct 2020
 
 nvidia-fs (2.2) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- Fri, 02 Oct 2020
+ --   Fri, 02 Oct 2020
 
 nvidia-fs (2.1) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- Sat, 06 June 2020
+ --   Sat, 06 June 2020
 
 nvidia-fs (2.0) RELEASED; urgency=low
 
@@ -59,7 +87,7 @@ nvidia-fs (2.0) RELEASED; urgency=low
 
   * Minor bug fixes to improve resiliency and supportability
 
- -- Mon, 27 April 2020
+ --   Mon, 27 April 2020
 
 nvidia-fs (1.0) RELEASED; urgency=low
 
@@ -69,4 +97,4 @@ nvidia-fs (1.0) RELEASED; urgency=low
 
   * NVMe and NVMe-oF patches for internal use on EXT4 filesystem
 
- -- Thu, 29 August 2019
+ --   Thu, 29 August 2019

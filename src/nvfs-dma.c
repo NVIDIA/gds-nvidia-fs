@@ -53,7 +53,7 @@ struct nvfs_dma_rw_ops nvfs_dev_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_nvme_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_sfxv_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops;
-struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops; 
+struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops;
 // nvfs symbol table
 struct module_entry modules_list[] = {
 	{
@@ -116,8 +116,18 @@ struct module_entry modules_list[] = {
 		0,
 		&nvfs_dev_dma_rw_ops
 	},
+	{
+		1,
+		0,
+		NVFS_PROC_MOD_NTAP_BEEGFS_KEY,
+		0,
+		"beegfs_v1_register_nvfs_dma_ops",
+		0,
+		"beegfs_v1_unregister_nvfs_dma_ops",
+		0,
+		&nvfs_dev_dma_rw_ops
+	},
 
-#ifdef CONFIG_MOFED // enable along-with nvfs-peer.c
 	{
 		1,
 		1,
@@ -141,7 +151,6 @@ struct module_entry modules_list[] = {
 		0,
 		&nvfs_ibm_scale_rdma_ops
 	},
-#endif
 #endif
 
 	{
@@ -282,7 +291,7 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 	uint64_t curr_phys_addr = 0, prev_phys_addr = 0;
 
 #ifdef TEST_DISCONTIG_ADDR
-	int key; 
+	int key;
 	int index = 0, j;
 
 	key = nvfs_get_simulated_key_index();
@@ -600,12 +609,16 @@ static int nvfs_dma_unmap_sg(struct device *device,
 	int i = 0, ret;
 	int gpu_segs = 0, cpu_segs = 0;
 	struct scatterlist *sg = NULL;
+	struct page *page;
 
 	if (unlikely(!sglist || (nents < 0)))
 		BUG();
 
         for_each_sg(sglist, sg, nents, i) {
-		struct page *page = sg_page(sg);
+		if (unlikely(sg == NULL)) {
+			return NVFS_IO_ERR;
+		}
+		page = sg_page(sg);
 		if (unlikely(page == NULL))
 		       continue;
 		ret = nvfs_check_gpu_page_and_error(page);
@@ -685,8 +698,16 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	
 	if(nents <= 0) {
 		
-		nvfs_info("%s: Wrong or none sglist entries passed %d\n"
+		nvfs_err("%s: Wrong or none sglist entries passed %d\n"
 				, __func__, nents);
+		return NVFS_BAD_REQ;
+	}
+
+
+	if(rdma_infop == NULL) {
+		
+		nvfs_err("%s: NULL pointer passed for rdma_infop\n"
+				, __func__);
 		return NVFS_BAD_REQ;
 	}
 
@@ -701,24 +722,33 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 #else
 	prev_mgroup = nvfs_mgroup_from_page(page);
 #endif
+
+	if(unlikely(IS_ERR(prev_mgroup))) {
+		nvfs_err("%s: mgroup internal error\n", __func__);
+		return NVFS_IO_ERR;
+	}
+
 	if(prev_mgroup == NULL) {
 		nvfs_dbg("%s: mgroup NULL for page %d for addr 0x%p", __func__, 0, page);
 		return NVFS_BAD_REQ;
 	} else {
-                if(prev_mgroup->rdma_reg_info.curr.version == 0) {
+                if(prev_mgroup->rdma_info.version == 0) {
 		        nvfs_err("%s: rdma version not set for page %d for addr 0x%p", __func__, 0, page);
 			nvfs_mgroup_put(prev_mgroup);	
 		        return NVFS_IO_ERR;
                 }
 		shadow_buf_size = (prev_mgroup->nvfs_pages_count) * PAGE_SIZE;
 		nvfsio = &prev_mgroup->nvfsio;
-	        memcpy(rdma_infop, &prev_mgroup->rdma_reg_info.curr, sizeof(*rdma_infop));
-		rdma_infop->rem_vaddr += nvfsio->rdma_seg_offset;
-		//rdma_infop->size -= nvfsio->rdma_seg_offset;
-		rdma_infop->size = (nvfsio->nvfs_active_pages_end - 
+	        memcpy(rdma_infop, &prev_mgroup->rdma_info, sizeof(*rdma_infop));
+                // get to the base 64K page of the starting address
+                rdma_infop->rem_vaddr -= (rdma_infop->rem_vaddr & (GPU_PAGE_SIZE -1));
+                // set to the current address by calulating the number of 64K pages + offset
+                rdma_infop->rem_vaddr += (nvfsio->cur_gpu_base_index << GPU_PAGE_SHIFT);
+                rdma_infop->rem_vaddr += (nvfsio->gpu_page_offset);
+		rdma_infop->size = (nvfsio->nvfs_active_pages_end -
 				nvfsio->nvfs_active_pages_start + 1) * PAGE_SIZE;
-		if (rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) || 
-			       	rdma_infop->size < 0) {
+		if ((int32_t) rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) ||
+			(int32_t) rdma_infop->size < 0) {
 			nvfs_err("%s: wrong rdma_infop->size %d shadow buffer size %llu addr = 0x%llx\n \
 					seg_offset = %lu, rkey = %x, mgroup = %p\n",
 					__func__, rdma_infop->size, shadow_buf_size, rdma_infop->rem_vaddr, \
@@ -733,15 +763,15 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 				nvfsio->rdma_seg_offset, rdma_infop->rkey);
         }
 	
-	if(unlikely(IS_ERR(prev_mgroup))) {
-		nvfs_err("%s: mgroup internal error\n", __func__);
-		return NVFS_IO_ERR;
-	}
-
 	shadow_buf_size = (prev_mgroup->nvfs_pages_count) * PAGE_SIZE;
 	nvfs_mgroup_put(prev_mgroup);	
 
 	for_each_sg(sglist, sg, nents, i) {
+		if (unlikely(sg == NULL)) {
+			nvfs_dbg("%s: NULL sglist entry passed %d", __func__, i);
+			memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_BAD_REQ;
+		}
 		page = sg_page(sg);		
 	        npages = DIV_ROUND_UP(sg->length, PAGE_SIZE);
 
@@ -780,7 +810,7 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 		total_size += sg->length;
 	}
 	if(total_size > shadow_buf_size) {
-		nvfs_err("%s: Size requested: %llu  more than shadow buf size: %llu\n", 
+		nvfs_err("%s: Size requested: %llu  more than shadow buf size: %llu\n",
 				__func__, total_size, shadow_buf_size);
 	        memset(rdma_infop, 0, sizeof(*rdma_infop));
 		return NVFS_IO_ERR;
@@ -807,7 +837,7 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	.nvfs_dma_unmap_sg              = nvfs_dma_unmap_sg,    \
 	.nvfs_is_gpu_page               = nvfs_is_gpu_page,     \
 	.nvfs_gpu_index                 = nvfs_gpu_index,               \
-	.nvfs_device_priority           = nvfs_device_priority, 
+	.nvfs_device_priority           = nvfs_device_priority,
 #endif
 
 

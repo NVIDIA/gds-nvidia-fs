@@ -30,11 +30,21 @@ endif
 KBUILD_MODPOST_WARN=1
 obj-m += nvidia-fs.o
 
+ARCH ?= $(shell uname -m)
+
+ifeq ($(ARCH),aarch64)
+ccflags-y += -DAARCH64_PLATFORM
+endif
+
+ifeq ($(CONFIG_AARCH64),1)
+ccflags-y += -DAARCH64_PLATFORM
+endif
+
 ccflags-y += -Wall
 ccflags-y += -I$(NVIDIA_SRC_DIR)
 
 ccflags-y += -I/usr/lib/gcc/x86_64-linux-gnu/7/include/
-nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o nvfs-rdma.o nvfs-p2p.o
+nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o nvfs-p2p.o
 nvidia-fs-$(CONFIG_NVFS_STATS) += nvfs-stat.o
 nvidia-fs-$(CONFIG_FAULT_INJECTION) += nvfs-fault.o
 GDS_VERSION ?= $(shell cat GDS_VERSION)
@@ -45,8 +55,12 @@ NVFS_MODULE_FLAGS = -DCONFIG_NVFS_STATS=y -DGDS_VERSION=$(GDS_VERSION)
 #By default we will enable kernel rdma support
 ifneq ($(CONFIG_DISABLE_NVFS_KERN_RDMA_SUPPORT),1)
         NVFS_MODULE_FLAGS += -DNVFS_ENABLE_KERN_RDMA_SUPPORT
+        nvidia-fs-y += nvfs-rdma.o
 endif
-
+ifeq ($(CONFIG_NVFS_BATCH_SUPPORT),y)
+        NVFS_MODULE_FLAGS += -DNVFS_BATCH_SUPPORT=y
+        nvidia-fs-y += nvfs-batch.o
+endif
 
 # **************************************
 # Enable following three lines for GCOV based
@@ -78,32 +92,10 @@ REL_MAJOR  := $(word 1,$(REL))
 REL_MEDIUM := $(word 2,$(REL))
 REL_MINOR  := $(word 3,$(REL))
 
-#ifneq ($(CONFIG_MOFED_VERSION),)
-#OFA_DIR ?= /usr/src/ofa_kernel
-#OFA_KERNEL ?= $(shell ( test -d $(OFA_DIR)/$(KVER) && echo $(OFA_DIR)/$(KVER) ) || ( test -d $(OFA_DIR)/default && echo $(OFA_DIR)/default ) || ( test -d /var/lib/dkms/mlnx-ofed-kernel/ && ls -d /var/lib/dkms/mlnx-ofed-kernel/*/build ) || ( echo $(OFA_DIR) ))
-#ccflags-y += -I$(OFA_KERNEL)/include/ -I$(OFA_KERNEL)/include/rdma
-#nvidia-fs-y += nvfs-peer.o
-#NVFS_MODULE_FLAGS +=  -DCONFIG_MOFED=y
-#endif
-
-ifneq ($(CONFIG_MOFED_VERSION),)
-MOFED_PATH_UBUNTU := /usr/src/mlnx-ofa_kernel-$(CONFIG_MOFED_VERSION)/
-MOFED_PATH_RHEL := /usr/src/mlnx-ofed-kernel-$(CONFIG_MOFED_VERSION)/
-ccflags-y += -I $(MOFED_PATH_UBUNTU)/include -I $(MOFED_PATH_RHEL)/include
-nvidia-fs-y += nvfs-peer.o
-NVFS_MODULE_FLAGS +=  -DCONFIG_MOFED=y
-MOFED_SYMBOLS := mofed_symbols
-endif
-
 all: module
 
 nv_configure:
 	@ ./configure $(KVER)
-
-mofed_symbols:
-	@ echo copying MOFED symvers
-	@ cp -rf $(MOFED_PATH_UBUNTU)/Module.symvers ./ || true
-	@ cp -rf $(MOFED_PATH_RHEL)/Module.symvers ./ || true
 
 nv_symbols:
 	@ echo "Picking NVIDIA driver sources from NVIDIA_SRC_DIR=$(NVIDIA_SRC_DIR). If that does not meet your expectation, you might have a stale driver still around and that might cause problems."
@@ -111,13 +103,13 @@ nv_symbols:
 	@ ./create_nv.symvers.sh
 	@ cat nv.symvers >> Module.symvers
 
-module: $(MOFED_SYMBOLS) nv_symbols nv_configure
-	@ KCPPFLAGS="$(NVFS_MODULE_FLAGS)" CONFIG_NVFS_STATS=y $(MAKE) -j4 -C $(KDIR) $(MAKE_PARAMS) M=$(PWD)/$(NVIDIAFS_PATH) modules
+module: nv_symbols nv_configure
+	@ KCPPFLAGS="$(NVFS_MODULE_FLAGS) -DNVFS_BATCH_SUPPORT=y" CONFIG_NVFS_BATCH_SUPPORT=y CONFIG_NVFS_STATS=y $(MAKE) -j4 -C $(KDIR) $(MAKE_PARAMS) M=$$PWD modules
 
 install:
 	[ -d $(DESTDIR)/$(MODULE_DESTDIR) ] || mkdir -p $(DESTDIR)/$(MODULE_DESTDIR)
-	cp $(PWD)/nvidia-fs.ko $(DESTDIR)/$(MODULE_DESTDIR)
-	if [ ! -n "$(DESTDIR)" ]; then $(DEPMOD) -r -ae $(KVER); fi
+	cp $$PWD/nvidia-fs.ko $(DESTDIR)/$(MODULE_DESTDIR)
+	if [ ! -n "$(DESTDIR)" ]; then $(DEPMOD) -a $(KVER); fi
 
 uninstall:
 	/bin/rm -f $(DESTDIR)/$(MODULE_DESTDIR)/nvidia_fs.ko
@@ -134,4 +126,4 @@ clean:
 TAGS:
 	find $(KERNELDIR) -follow -name \*.h -o -name \*.c  |xargs etags
 
-.PHONY: mofed_symbols nv_symbols clean all help install default linksyms nvidia_src_dir
+.PHONY: nv_symbols clean all help install default linksyms nvidia_src_dir

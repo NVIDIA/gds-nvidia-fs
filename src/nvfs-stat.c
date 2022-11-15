@@ -49,6 +49,14 @@ atomic_t nvfs_read_ops_per_sec;
 atomic64_t nvfs_read_latency_per_sec;
 atomic_t nvfs_avg_read_latency;
 
+atomic_t nvfs_batch_ops_per_sec;
+atomic64_t nvfs_batch_submit_latency_per_sec;
+atomic_t nvfs_batch_submit_avg_latency;
+
+atomic64_t nvfs_n_batches;
+atomic64_t nvfs_n_batches_ok;
+atomic_t nvfs_n_batch_err;
+
 atomic64_t nvfs_n_reads_sparse_files;
 atomic64_t nvfs_n_reads_sparse_io;
 atomic64_t nvfs_n_reads_sparse_region;
@@ -75,12 +83,15 @@ atomic64_t nvfs_n_maps_ok;
 atomic_t nvfs_n_map_err;
 atomic64_t nvfs_n_free;
 atomic_t nvfs_n_callbacks;
+atomic64_t nvfs_n_delayed_frees;
 
 atomic64_t nvfs_n_active_shadow_buf_sz;
 atomic_t nvfs_n_op_reads;
 atomic_t nvfs_n_op_writes;
 atomic_t nvfs_n_op_maps;
 atomic_t nvfs_n_op_process;
+atomic_t nvfs_n_op_batches;
+atomic64_t prev_batch_submit_avg_latency;
 
 atomic_t nvfs_n_err_mix_cpu_gpu;
 atomic_t nvfs_n_err_sg_err;
@@ -96,6 +107,20 @@ atomic64_t prev_write_latency;
 atomic_t nvfs_n_pg_cache;
 atomic_t nvfs_n_pg_cache_fail;
 atomic_t nvfs_n_pg_cache_eio;
+
+
+static void nvfs_reset_gpuinfo_stats(void)
+{
+	struct nvfs_gpu_stat *gpustat;
+	unsigned int temp = 0;
+
+	rcu_read_lock();
+	hash_for_each_rcu(nvfs_gpu_stat_hash, temp, gpustat, hash_link)
+	{
+              nvfs_stat64_reset(&gpustat->max_bar_memory_pinned);
+        }
+	rcu_read_unlock();
+}
 
 static void nvfs_print_gpuinfo(struct seq_file *m)
 {
@@ -148,11 +173,17 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 			nvfs_major_version(nvfs_driver_version()),
 			nvfs_minor_version(nvfs_driver_version()),
 			NVFS_DRIVER_PATCH_VERSION);
-        seq_printf(m, "Mellanox PeerDirect Supported: %s\n",
-#ifdef CONFIG_MOFED
-        "True");
+#ifdef GDS_DMABUF_SUPPORTED 
+        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "True");
 #else
-        "False");
+        {
+                struct path path;
+                int ret = kern_path("/sys/kernel/mm/memory_peers/nv_mem/version", LOOKUP_FOLLOW, &path);
+                if(ret)
+                        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "False");
+                else
+                        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "True");
+        }
 #endif
         seq_printf(m, "IO stats: %s, peer IO stats: %s\n",
                    nvfs_rw_stats_enabled ? "Enabled" : "Disabled",
@@ -170,6 +201,17 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	seq_printf(m, "Active Process: %u\n", atomic_read(&nvfs_n_op_process) / nvfs_get_device_count());
 
 
+        if (nvfs_rw_stats_enabled) {
+#ifdef HAVE_ATOMIC64_LONG
+	seq_printf(m, "Batches				: n=%lu ok=%lu err=%u Avg-Submit-Latency(usec)=%u\n",
+#else
+	seq_printf(m, "Batches				: n=%llu ok=%llu err=%u Avg-Submit-Latency(usec)=%u\n",
+#endif
+	    atomic64_read(&nvfs_n_batches),
+	    atomic64_read(&nvfs_n_batches_ok),
+	    atomic_read(&nvfs_n_batch_err),
+	    atomic_read(&nvfs_batch_submit_avg_latency));
+        }
         if (nvfs_rw_stats_enabled) {
 #ifdef HAVE_ATOMIC64_LONG
 	seq_printf(m, "Reads				: n=%lu ok=%lu err=%u readMiB=%lu io_state_err=%u\n",
@@ -239,16 +281,17 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    atomic64_read(&nvfs_n_munmap));
 
 #ifdef HAVE_ATOMIC64_LONG
-	seq_printf(m, "Bar1-map			: n=%lu ok=%lu err=%u free=%lu callbacks=%u active=%u\n",
+	seq_printf(m, "Bar1-map			: n=%lu ok=%lu err=%u free=%lu callbacks=%u active=%u delay-frees=%lu\n",
 #else
-	seq_printf(m, "Bar1-map			: n=%llu ok=%llu err=%u free=%llu callbacks=%u active=%u\n",
+	seq_printf(m, "Bar1-map			: n=%llu ok=%llu err=%u free=%llu callbacks=%u active=%u delay-frees=%llu\n",
 #endif
 	    atomic64_read(&nvfs_n_maps),
 	    atomic64_read(&nvfs_n_maps_ok),
 	    atomic_read(&nvfs_n_map_err),
 	    atomic64_read(&nvfs_n_free),
 	    atomic_read(&nvfs_n_callbacks),
-	    atomic_read(&nvfs_n_op_maps));
+	    atomic_read(&nvfs_n_op_maps),
+	    atomic64_read(&nvfs_n_delayed_frees));
 
 	seq_printf(m, "Error				: cpu-gpu-pages=%u sg-ext=%u dma-map=%u dma-ref=%u\n",
 		atomic_read(&nvfs_n_err_mix_cpu_gpu),
@@ -256,9 +299,10 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 		atomic_read(&nvfs_n_err_dma_map),
 		atomic_read(&nvfs_n_err_dma_ref));
 
-        seq_printf(m, "Ops				: Read=%u Write=%u\n",
+        seq_printf(m, "Ops				: Read=%u Write=%u BatchIO=%u\n",
 	    atomic_read(&nvfs_n_op_reads),
-	    atomic_read(&nvfs_n_op_writes));
+	    atomic_read(&nvfs_n_op_writes),
+	    atomic_read(&nvfs_n_op_batches));
 
 	nvfs_print_gpuinfo(m);
 
@@ -310,6 +354,14 @@ static int nvfs_stats_reset(void) {
 	nvfs_stat_reset(&nvfs_n_map_err);
 	nvfs_stat64_reset(&nvfs_n_free);
 	nvfs_stat_reset(&nvfs_n_callbacks);
+	nvfs_stat64_reset(&nvfs_n_delayed_frees);
+
+	nvfs_stat64_reset(&nvfs_n_batches);
+	nvfs_stat64_reset(&nvfs_n_batches_ok);
+	nvfs_stat_reset(&nvfs_n_batch_err);
+	nvfs_stat_reset(&nvfs_batch_submit_avg_latency);
+	nvfs_stat_reset(&nvfs_batch_ops_per_sec);
+	nvfs_stat_reset(&nvfs_n_op_batches);
 
 	nvfs_stat_reset(&nvfs_read_ops_per_sec);
 	nvfs_stat_reset(&nvfs_write_ops_per_sec);
@@ -321,6 +373,7 @@ static int nvfs_stats_reset(void) {
 	nvfs_stat_reset(&nvfs_n_pg_cache_fail);
 	nvfs_stat_reset(&nvfs_n_pg_cache_eio);
 
+        nvfs_reset_gpuinfo_stats();
 	nvfs_reset_peer_affinity_stats();
 	return 0;
 }
@@ -454,6 +507,39 @@ void nvfs_update_read_latency(unsigned long avg_latency,
                 nvfs_stat(&nvfs_read_ops_per_sec);
         }
 }
+
+void nvfs_update_batch_latency(unsigned long avg_latency,
+                                atomic64_t *stat)
+{
+        int delta;
+        int average_latency;
+
+        if (atomic64_read(&prev_batch_submit_avg_latency) == 0) {
+                atomic64_set(&prev_batch_submit_avg_latency, ktime_to_us(ktime_get()));
+                nvfs_stat(&nvfs_batch_ops_per_sec);
+                nvfs_stat64_add(avg_latency, stat);
+                return;
+        }
+
+        delta = ktime_to_us(ktime_get()) - atomic64_read(&prev_batch_submit_avg_latency);
+
+        if (delta > USEC_PER_SEC) {
+                nvfs_stat64_add(avg_latency, stat);
+                nvfs_stat(&nvfs_batch_ops_per_sec);
+
+                average_latency = div64_safe(atomic64_read(stat),
+                                        (unsigned long) atomic_read(&nvfs_batch_ops_per_sec));
+                atomic_set(&nvfs_batch_submit_avg_latency, average_latency);
+                nvfs_stat64_reset(stat);
+                nvfs_stat_reset(&nvfs_batch_ops_per_sec);
+
+                atomic64_set(&prev_batch_submit_avg_latency, ktime_to_us(ktime_get()));
+        } else {
+                nvfs_stat64_add(avg_latency, stat);
+                nvfs_stat(&nvfs_batch_ops_per_sec);
+        }
+}
+
 
 void nvfs_update_write_latency(unsigned long avg_latency,
                                 atomic64_t *stat)
