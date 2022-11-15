@@ -104,6 +104,7 @@ extern atomic64_t nvfs_n_maps_ok;
 extern atomic_t nvfs_n_map_err;
 extern atomic64_t nvfs_n_free;
 extern atomic_t nvfs_n_callbacks;
+extern atomic64_t nvfs_n_delayed_frees;
 
 extern atomic64_t nvfs_n_active_shadow_buf_sz;
 extern atomic_t nvfs_n_op_reads;

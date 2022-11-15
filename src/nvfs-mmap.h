@@ -56,7 +56,10 @@ X(2, IO_READY, READY) \
 X(3, IO_IN_PROGRESS, IN_PROGRESS) \
 X(4, IO_TERMINATE_REQ, TERMINATE_REQ) \
 X(5, IO_TERMINATED, TERMINATED) \
-X(6, IO_CALLBACK_END, CALLBACK_END)
+X(6, IO_CALLBACK_REQ, CALLBACK_REQ) \
+X(7, IO_CALLBACK_END, CALLBACK_END) \
+X(8, IO_UNPIN_PAGES_ALREADY_INVOKED, UNPIN_PAGES_ALREADY_INVOKED)
+
 
 typedef enum nvfs_io_state {
 #define X(code, name, string) name = code,
@@ -93,6 +96,7 @@ typedef struct nvfs_io {
         bool sync;                      // sync flag
         bool hipri;                     // send IO as hipri
         bool check_sparse;              // set if file is sparse
+        bool rw_stats_enabled;
         unsigned long cur_gpu_base_index;   // starting gpu index in this op
         unsigned long nvfs_active_pages_start;
         unsigned long nvfs_active_pages_end;
@@ -100,16 +104,16 @@ typedef struct nvfs_io {
         int retrycnt;                   // retry count for retriable errors
         wait_queue_head_t rw_wq;        // wait queue for serializing parallel dma req
         struct kiocb common;		// kiocb structure used for read/write operation
-	ktime_t start_io;		// Start time of IO for latency calculation
-	ssize_t rdma_seg_offset;	// Start offset for the rdma segment
-	bool 	use_rkeys;		// Is set, use rkeys for IO
+        ktime_t start_io;		// Start time of IO for latency calculation
+        ssize_t rdma_seg_offset;	// Start offset for the rdma segment
+        bool 	use_rkeys;		// Is set, use rkeys for IO
 }nvfs_io_t;
 
 struct pci_dev_mapping {
         struct nvidia_p2p_dma_mapping *dma_mapping; // p2p dma mappint entries
         struct pci_dev *pci_dev;                    // NVMe device
-	int n_dma_chunks;			    // Number of DMA chunks
-	struct hlist_node hentry;
+        int n_dma_chunks;			    // Number of DMA chunks
+        struct hlist_node hentry;
 };
 
 struct nvfs_gpu_args {
@@ -119,6 +123,7 @@ struct nvfs_gpu_args {
         struct page *end_fence_page;                // end fence addr pinned page
         atomic_t io_state;                    	    // IO state transitions
         atomic_t dma_mapping_in_progress;	    // Mapping in progress for a specific PCI device
+	atomic_t callback_invoked;
         wait_queue_head_t callback_wq;              // wait queue for IO completion
         bool is_bounce_buffer;			    // is this memory used for bounce buffer
 	int n_phys_chunks;			    // number of contiguous physical address range
@@ -177,6 +182,7 @@ void nvfs_mgroup_init(void);
 int nvfs_mgroup_mmap(struct file *filp, struct vm_area_struct *vma);
 nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index);
 void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup);
+void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup);
 void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_page_state state, bool validate, bool update_nvfsio);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page(struct page* page);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int npages);
@@ -191,4 +197,7 @@ void nvfs_mgroup_unpin_shadow_pages(nvfs_mgroup_ptr_t nvfs_mgroup);
 nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr(u64 cpuvaddr);
 void nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup_ptr_t nvfs_mgroup, struct page* page, unsigned long *gpu_index, pgoff_t *offset);
 uint64_t nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup_ptr_t nvfs_mgroup, struct page* page);
+void nvfs_mgroup_put_pending_mgroups(void);
+void nvfs_mgroup_get_ref(nvfs_mgroup_ptr_t mgroup);
+bool nvfs_mgroup_put_ref(nvfs_mgroup_ptr_t mgroup);
 #endif /* NVFS_MMAP_H */

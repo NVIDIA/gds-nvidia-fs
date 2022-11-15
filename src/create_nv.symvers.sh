@@ -128,7 +128,6 @@ done
 if [ ! -e "$nvidia_mod" ]; then
 	echo "-E- Cannot locate nvidia modules!" >&2
 	echo "CUDA driver must be installed before installing this package!" >&2
-	exit 1
 fi
 
 if [ ! -s "$MOD_SYMVERS" ]; then

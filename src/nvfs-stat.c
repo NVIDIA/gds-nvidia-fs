@@ -83,6 +83,7 @@ atomic64_t nvfs_n_maps_ok;
 atomic_t nvfs_n_map_err;
 atomic64_t nvfs_n_free;
 atomic_t nvfs_n_callbacks;
+atomic64_t nvfs_n_delayed_frees;
 
 atomic64_t nvfs_n_active_shadow_buf_sz;
 atomic_t nvfs_n_op_reads;
@@ -280,16 +281,17 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	    atomic64_read(&nvfs_n_munmap));
 
 #ifdef HAVE_ATOMIC64_LONG
-	seq_printf(m, "Bar1-map			: n=%lu ok=%lu err=%u free=%lu callbacks=%u active=%u\n",
+	seq_printf(m, "Bar1-map			: n=%lu ok=%lu err=%u free=%lu callbacks=%u active=%u delay-frees=%lu\n",
 #else
-	seq_printf(m, "Bar1-map			: n=%llu ok=%llu err=%u free=%llu callbacks=%u active=%u\n",
+	seq_printf(m, "Bar1-map			: n=%llu ok=%llu err=%u free=%llu callbacks=%u active=%u delay-frees=%llu\n",
 #endif
 	    atomic64_read(&nvfs_n_maps),
 	    atomic64_read(&nvfs_n_maps_ok),
 	    atomic_read(&nvfs_n_map_err),
 	    atomic64_read(&nvfs_n_free),
 	    atomic_read(&nvfs_n_callbacks),
-	    atomic_read(&nvfs_n_op_maps));
+	    atomic_read(&nvfs_n_op_maps),
+	    atomic64_read(&nvfs_n_delayed_frees));
 
 	seq_printf(m, "Error				: cpu-gpu-pages=%u sg-ext=%u dma-map=%u dma-ref=%u\n",
 		atomic_read(&nvfs_n_err_mix_cpu_gpu),
@@ -352,6 +354,7 @@ static int nvfs_stats_reset(void) {
 	nvfs_stat_reset(&nvfs_n_map_err);
 	nvfs_stat64_reset(&nvfs_n_free);
 	nvfs_stat_reset(&nvfs_n_callbacks);
+	nvfs_stat64_reset(&nvfs_n_delayed_frees);
 
 	nvfs_stat64_reset(&nvfs_n_batches);
 	nvfs_stat64_reset(&nvfs_n_batches_ok);

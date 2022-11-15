@@ -609,12 +609,16 @@ static int nvfs_dma_unmap_sg(struct device *device,
 	int i = 0, ret;
 	int gpu_segs = 0, cpu_segs = 0;
 	struct scatterlist *sg = NULL;
+	struct page *page;
 
 	if (unlikely(!sglist || (nents < 0)))
 		BUG();
 
         for_each_sg(sglist, sg, nents, i) {
-		struct page *page = sg_page(sg);
+		if (unlikely(sg == NULL)) {
+			return NVFS_IO_ERR;
+		}
+		page = sg_page(sg);
 		if (unlikely(page == NULL))
 		       continue;
 		ret = nvfs_check_gpu_page_and_error(page);
@@ -743,8 +747,8 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
                 rdma_infop->rem_vaddr += (nvfsio->gpu_page_offset);
 		rdma_infop->size = (nvfsio->nvfs_active_pages_end -
 				nvfsio->nvfs_active_pages_start + 1) * PAGE_SIZE;
-		if (rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) ||
-			       	rdma_infop->size < 0) {
+		if ((int32_t) rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) ||
+			(int32_t) rdma_infop->size < 0) {
 			nvfs_err("%s: wrong rdma_infop->size %d shadow buffer size %llu addr = 0x%llx\n \
 					seg_offset = %lu, rkey = %x, mgroup = %p\n",
 					__func__, rdma_infop->size, shadow_buf_size, rdma_infop->rem_vaddr, \
@@ -763,6 +767,11 @@ int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	nvfs_mgroup_put(prev_mgroup);	
 
 	for_each_sg(sglist, sg, nents, i) {
+		if (unlikely(sg == NULL)) {
+			nvfs_dbg("%s: NULL sglist entry passed %d", __func__, i);
+			memset(rdma_infop, 0, sizeof(*rdma_infop));
+			return NVFS_BAD_REQ;
+		}
 		page = sg_page(sg);		
 	        npages = DIV_ROUND_UP(sg->length, PAGE_SIZE);
 

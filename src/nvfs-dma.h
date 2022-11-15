@@ -32,6 +32,11 @@
 #include <linux/scatterlist.h>
 #include <linux/page-flags.h>
 #include <linux/dma-direction.h>
+
+#ifdef HAVE_BLK_INTEGRITY_H
+#include <linux/blk-integrity.h>
+#endif
+
 #include "nvfs-core.h"
 #define NVFS_IO_ERR	-1
 #define NVFS_BAD_REQ	-2

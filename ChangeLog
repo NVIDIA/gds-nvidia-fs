@@ -1,3 +1,13 @@
+nvidia-fs (2.14) RELEASE; urgency=low
+ 
+  * Minor bug fixes
+
+ -- Oct 2022
+
+nvidia-fs (2.13) RELEASE; urgency=low
+ 
+  * Minor bug fixes
+
 nvidia-fs (2.12) RELEASE; urgency=low
  * minor fixes to support newer kernels 
  --   Mar 2022

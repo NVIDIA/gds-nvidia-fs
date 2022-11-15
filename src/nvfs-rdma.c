@@ -126,7 +126,7 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 	struct nvfs_rdma_info* tmp_nvfs_rdma_info = NULL;
 	uint32_t i = 0;
 #endif
-	nvfs_dbg("SG: %s CPU addr received %llx\n", __func__, rdma_reg_info_args->cpuvaddr);	
+	nvfs_dbg("%s CPU addr received %llx\n", __func__, rdma_reg_info_args->cpuvaddr);	
 	
 	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(rdma_reg_info_args->cpuvaddr);
 	if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
@@ -135,7 +135,7 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 	}
 	shadow_buf_size = (nvfs_mgroup->nvfs_pages_count) * PAGE_SIZE;
 	
-	nvfs_dbg("SG: %s nvfs_mgroup = %p sbuf size = %llu\n", __func__,
+	nvfs_dbg("%s nvfs_mgroup = %p sbuf size = %llu\n", __func__,
 			nvfs_mgroup, shadow_buf_size);
 	
 	rdma_infop = &nvfs_mgroup->rdma_info;
@@ -164,7 +164,11 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 	for_each_sg(sgl, sg, tmp_nents, i) {
 		tmp_offset = tmp_vaddr % PAGE_SIZE;
 	       	tmp_size = PAGE_SIZE - tmp_offset;
+#ifdef HAVE_PIN_USER_PAGES_FAST
+		if(pin_user_pages_fast(tmp_vaddr, 1, 1, &tmp_page) < 0) {
+#else
 		if(get_user_pages_fast(tmp_vaddr, 1, 1, &tmp_page) < 0) {
+#endif
 			nvfs_dbg("user pages returned -ve\n");
 			return -EINVAL;
 		}
@@ -205,7 +209,7 @@ int nvfs_clear_rdma_reg_info_in_mgroup(
 {
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
 	
-	nvfs_dbg("SG: %s CPU addr received %llx\n", __func__, rdma_clear_info_args->cpuvaddr);	
+	nvfs_dbg("%s CPU addr received %llx\n", __func__, rdma_clear_info_args->cpuvaddr);	
 	
 	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(rdma_clear_info_args->cpuvaddr);
 	if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {

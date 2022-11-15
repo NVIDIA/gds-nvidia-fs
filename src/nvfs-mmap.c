@@ -39,6 +39,8 @@
 #include <linux/list.h>
 #include <linux/notifier.h>
 #include <linux/random.h>
+#include <linux/ktime.h>
+#include <linux/delay.h>
 
 #include "nvfs-pci.h"
 #include "nvfs-mmap.h"
@@ -51,12 +53,30 @@
 static DEFINE_HASHTABLE(nvfs_io_mgroup_hash, NVFS_MAX_SHADOW_ALLOCS_ORDER);
 static spinlock_t lock ____cacheline_aligned;
 
-static inline void nvfs_mgroup_get_ref(nvfs_mgroup_ptr_t mgroup)
+static inline bool nvfs_check_process_context(void)
+{
+	if(irqs_disabled() || 
+			in_interrupt() || 
+			in_atomic() || 
+			in_nmi() || 
+			current->mm == NULL) {
+		nvfs_dbg("irq_disabled = %d, in intr = %d, in atomic = %d, in nmi = %d current->mm = %d\n",
+				(int)irqs_disabled(), 
+                                (int)in_interrupt(), 
+                                (int)in_atomic(), 
+                                (int)in_nmi(), 
+                                (int)(current->mm == NULL));
+		return 0;
+	}
+	return 1;
+}
+
+void nvfs_mgroup_get_ref(nvfs_mgroup_ptr_t mgroup)
 {
 	atomic_inc(&mgroup->ref);
 }
 
-static inline bool nvfs_mgroup_put_ref(nvfs_mgroup_ptr_t mgroup)
+bool nvfs_mgroup_put_ref(nvfs_mgroup_ptr_t mgroup)
 {
 	return atomic_dec_and_test(&mgroup->ref);
 }
@@ -102,27 +122,40 @@ nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index)
         return nvfs_mgroup;
 }
 
-static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup)
+static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
 {
         int i;
       	struct nvfs_gpu_args *gpu_info = NULL;
+        gpu_info = &nvfs_mgroup->gpu_info;
 
+
+	if (atomic_read(&gpu_info->io_state) > IO_INIT) {
+		if(nvfs_free_gpu_info(gpu_info, from_dma) != 0) {
+			nvfs_info("nvfs_free_gpu_info failed. for mgroup %p, ref cnt %d\n", 
+                                  nvfs_mgroup, atomic_read(&nvfs_mgroup->ref));
+			return;
+		}
+	}
         spin_lock(&lock);	
         hash_del_rcu(&nvfs_mgroup->hash_link);
         spin_unlock(&lock);
 
+	nvfs_dbg("irq_disabled = %d, in intr = %d, in atomic = %d, in nmi = %d current->mm = %d\n",
+			(int)irqs_disabled(), 
+			(int)in_interrupt(), 
+			(int)in_atomic(), 
+			(int)in_nmi(), 
+			(int)(current->mm == NULL));
         // don't use rcu expedited version when calling in IRQ context
-        if (unlikely(NVFS_MAY_SLEEP())) {
+        if (unlikely(!NVFS_MAY_SLEEP())) {
                 synchronize_rcu();
         } else  {
                 synchronize_rcu_expedited();
         }
 
-        gpu_info = &nvfs_mgroup->gpu_info;
 
 	if (atomic_read(&gpu_info->io_state) > IO_INIT) {
 		nvfs_stat_d(&nvfs_n_op_maps);
-		nvfs_free_gpu_info(gpu_info);
 	}
 
 	if(nvfs_mgroup->nvfs_metadata)
@@ -143,7 +176,11 @@ static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup)
 	nvfs_mgroup = NULL;
 }
 
-void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup)
+
+/*
+void nvfs_mgroup_put_callback(nvfs_mgroup_ptr_t nvfs_mgroup)
+*/
+static void nvfs_mgroup_put_internal(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
 {
         if(nvfs_mgroup == NULL)
                 return;
@@ -151,8 +188,39 @@ void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup)
 			atomic_read(&nvfs_mgroup->ref));
 
         if(nvfs_mgroup_put_ref(nvfs_mgroup)) {
-                nvfs_mgroup_free(nvfs_mgroup);
+		/* The nvidia_p2p_put_pages is only allowed from the 
+		 * same process context as the nvidia_p2p_get_pages*.
+		 * So here we are checking if the nvfs_mgroup_put() is called
+		 * from the process conext or not and if not then atleast it should 
+		 * be called from the nvfs_get_pages_free_callback which indicates that 
+		 * the GPU memory and it's mapping are being freed in the kernel
+		 */
+#if 0
+                if(nvfs_check_process_context() || 
+				atomic_read(&nvfs_mgroup->gpu_info.io_state) == IO_CALLBACK_END) {
+			nvfs_dbg("Freeing mgroup %p\n", nvfs_mgroup);
+			nvfs_mgroup_free(nvfs_mgroup);
+		} else {
+			//Dake the ref back othe mgroup, for it to be eventually freed by the callback.
+			nvfs_dbg("Ignoring free from async context and taking \
+					back the dropped reference for mgroup %p\n", (void*) nvfs_mgroup);
+			//Add mgroup to a list or mark the mgroup for deffered completion
+			//nvfs_mgroup->deffered_free = 1;
+			nvfs_stat64(&nvfs_n_delayed_frees);
+			nvfs_mgroup_get_ref(nvfs_mgroup);
+		}
+#else
+		nvfs_mgroup_free(nvfs_mgroup, from_dma);
+#endif
         }
+}
+
+void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup) {
+	return nvfs_mgroup_put_internal(nvfs_mgroup, false);
+}
+
+void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup) {
+	return nvfs_mgroup_put_internal(nvfs_mgroup, true);
 }
 
 static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
@@ -174,8 +242,11 @@ static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
                                 __func__, __LINE__);
                 goto out;
         }
-
+#ifdef HAVE_PIN_USER_PAGES_FAST
+	ret = pin_user_pages_fast(cpuvaddr, 1, 1, &page);
+#else
 	ret = get_user_pages_fast(cpuvaddr, 1, 1, &page);
+#endif
 	if (ret <= 0) {
 		nvfs_err("%s:%d invalid VA %llx ret %d\n",
 				__func__, __LINE__,
@@ -304,7 +375,11 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
         else
 #endif
 	{
+#ifdef HAVE_PIN_USER_PAGES_FAST
+		ret = pin_user_pages_fast(cpuvaddr, count, 1, pages);
+#else
 		ret = get_user_pages_fast(cpuvaddr, count, 1, pages);
+#endif
 	}
 
         // fail if the number of pages pinned is not equal to requested count
@@ -407,7 +482,6 @@ static void nvfs_vma_close(struct vm_area_struct *vma)
 #ifdef CONFIG_NVFS_STATS
 	unsigned long length = vma->vm_end - vma->vm_start;
 #endif
-
         if (vma->vm_private_data != NULL) {
 		struct nvfs_gpu_args *gpu_info;
 
@@ -439,17 +513,19 @@ static void nvfs_vma_close(struct vm_area_struct *vma)
 				// IO to IO_TERMINATE_REQ and move on; the last
 				// reference on nvfs_mgroup will ensure cleaning up
 				// the structure
-				nvfs_io_terminate_requested(gpu_info);	
+				(void)nvfs_io_terminate_requested(gpu_info, false);	
+                                // free the memory only if sucessfully terminated by vma_close
+			        if(atomic_read(&gpu_info->io_state) != IO_TERMINATED) {
+                                        goto done;
+                                }
 			}
 
-			nvfs_dbg("munmap invoked - IO state %s\n",
-				nvfs_io_state_status(atomic_read(&gpu_info->io_state)));
+			nvfs_dbg("munmap invoked - IO state %s %d %d\n",
+				nvfs_io_state_status(atomic_read(&gpu_info->io_state)), 
+						     atomic_read(&gpu_info->io_state),
+						     IO_TERMINATED);
 
-			// From this point onwards, no new IOs can be submitted
-			if (current->flags & PF_EXITING) {
-				nvfs_dbg("%s:%d Process is exiting....\n",
-					__func__, __LINE__);
-			} else {
+			if (atomic_read(&gpu_info->io_state) == IO_TERMINATED){
 				// We should have atmost 3 references
 				// 1: ref from mmap()
 				// 2: ref from nvfs_mgroup_pin_shadow_pages()
@@ -1154,9 +1230,9 @@ int nvfs_check_gpu_page_and_error(struct page *page)
 		        nvfs_stat_d(&nvfs_n_err_dma_ref);
                 } else {
                         // drop the reference taken from the nvfs_mgroup_from_page call
-                        nvfs_mgroup_put(nvfs_mgroup);
+                        nvfs_mgroup_put_dma(nvfs_mgroup);
                 }
-                nvfs_mgroup_put(nvfs_mgroup);
+                nvfs_mgroup_put_dma(nvfs_mgroup);
                 return 1;
 	}
 }

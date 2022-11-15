@@ -8,8 +8,8 @@ GPUDirect Storage kernel driver nvidia-fs.ko is a kernel module to orchestrate I
 
 Currently the driver supports following storage solutions.
 
-- EXT4 filesystem in ordered mode on NVMe/NVMeOF/ScaleFlux CSD devices.
-- NFS over RDMA with MOFED 5.1 
+- XFS and EXT4 filesystem in ordered mode on NVMe/NVMeOF/ScaleFlux CSD devices.
+- NFS over RDMA with MOFED 5.1 and above 
 - RDMA capable distributed filesystems like DDN Exascaler, WekaFS, and VAST.
 - ScaleFlux Computational storage
 
@@ -19,7 +19,7 @@ GDS documents and online resources provide additional context for the optimal us
 ## Requirements
  - NVIDIA Tesla or Quadro class GPUs based on Pascal, Volta, Turing or Ampere
  - NVMe/NVMeOF storage devices or supported distributed filesystem
- - Linux kernel between 4.15.0.x and 5.4.0.x
+ - Linux kernel between 4.15.0.x and above 
  - MOFED 5.1 or above
  - cuda toolkit 10.0 and above
  - GPU display driver >= 418.40

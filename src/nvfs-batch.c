@@ -73,10 +73,15 @@ nvfs_batch_io_t* nvfs_io_batch_init(nvfs_ioctl_param_union *input_param)
 	nvfs_ioctl_batch_ioargs_t *batch_args = &(input_param->batch_ioargs);
         nvfs_batch_io_t *nvfs_batch = NULL; 
         int i, ret = -EINVAL;
+        bool rw_stats_enabled = 0;
+        
+        if(nvfs_rw_stats_enabled > 0) {
+                rw_stats_enabled = 1;
+        }
 
         if (batch_args->nents <= 0 || batch_args->nents > NVFS_MAX_BATCH_ENTRIES) {
                 nvfs_err("number of batch entries exceeds max supported entries %lld \n", batch_args->nents);
-	        return ERR_PTR(ret);
+                return ERR_PTR(ret);
         }
 
         nvfs_batch = kzalloc(sizeof(nvfs_batch_io_t), GFP_KERNEL); 
@@ -114,17 +119,19 @@ nvfs_batch_io_t* nvfs_io_batch_init(nvfs_ioctl_param_union *input_param)
                         goto cleanup; 
                 }
 		if (io_entry.optype == READ) {
-			if (nvfs_rw_stats_enabled) {
+			if (rw_stats_enabled) {
 				nvfs_stat64(&nvfs_n_reads);
 				nvfs_stat(&nvfs_n_op_reads);
 			}
 		} else {
-			if (nvfs_rw_stats_enabled) {
+			if (rw_stats_enabled) {
 				nvfs_stat64(&nvfs_n_writes);
 				nvfs_stat(&nvfs_n_op_writes);
 			}
 		}
+		nvfs_batch->nvfsio[i]->rw_stats_enabled = rw_stats_enabled;
         }
+        
         return nvfs_batch;
 
 cleanup:
