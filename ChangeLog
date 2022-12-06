@@ -1,4 +1,10 @@
-nvidia-fs (2.14) RELEASE; urgency=low
+nvidia-fs (2.14.13) RELEASE; urgency=low
+ 
+  * Removed HIPRI support.
+
+ -- Nov 2022
+
+nvidia-fs (2.14.12) RELEASE; urgency=low
  
   * Minor bug fixes
 
