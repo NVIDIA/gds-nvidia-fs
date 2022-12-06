@@ -893,19 +893,6 @@ static inline ssize_t nvfs_io_ret(struct kiocb *req, ssize_t ret)
 	}
 }
 
-#ifdef HAVE_IOCB_HIPRI
-
-/*
- * IOCB_HIPRI flag ensures polling for DMA completion
- * to acheive optimal latency
- */
-static inline void set_hipri_flag(struct kiocb *ki)
-{
-	ki->ki_flags |= IOCB_HIPRI;
-}
-
-#endif
-
 static inline void set_write_flag(struct kiocb *ki)
 {
 	ki->ki_flags |= IOCB_WRITE;
@@ -1005,12 +992,6 @@ nvfs_direct_io(int op, struct file *filp, char __user *buf,
 #else
 	nvfsio->sync = true;
 #endif
-
-        if(nvfsio->hipri) {
-#ifdef HAVE_IOCB_HIPRI
-                set_hipri_flag(&nvfsio->common);
-#endif
-        }
 
 #ifdef CONFIG_FAULT_INJECTION
         if (nvfs_fault_trigger(&nvfs_rw_verify_area_error)) {
