@@ -800,7 +800,11 @@ void nvfs_io_free(nvfs_io_t* nvfsio, long res)
 /*
  * Async IO completion callback; This is invoked from interrupt context
  */
+#ifdef KI_COMPLETE_HAS_3_PARAMETERS
 static void nvfs_io_complete(struct kiocb *kiocb, long res, long res2)
+#else
+static void nvfs_io_complete(struct kiocb *kiocb, long res)
+#endif
 {
 	nvfs_io_t* nvfsio = container_of(kiocb, struct nvfs_io, common);
 	nvfs_mgroup_ptr_t nvfs_mgroup = container_of(nvfsio,
@@ -874,8 +878,12 @@ static inline ssize_t nvfs_io_ret(struct kiocb *req, ssize_t ret)
 		nvfs_dbg("%s:%d status :%ld\n",
 				__func__, __LINE__, ret);
 		req->private = NULL;
-		nvfs_io_complete(req, ret, 0);
-		if (nvfsio->sync && ret != nvfsio->ret) {
+		#ifdef KI_COMPLETE_HAS_3_PARAMETERS
+                nvfs_io_complete(req, ret, 0);
+                #else
+                nvfs_io_complete(req, ret);
+		#endif
+                if (nvfsio->sync && ret != nvfsio->ret) {
 			if (nvfsio->ret < 0) {
 				ret = PTR_ERR(req->private);
 				if(ret != -EOPNOTSUPP) {
@@ -908,7 +916,7 @@ static inline bool unsigned_offsets(struct file *file)
         return file->f_mode & FMODE_UNSIGNED_OFFSET;
 }
 
-int rw_verify_area(int read_write, struct file *file,
+int nvfs_rw_verify_area(int read_write, struct file *file,
 		char __user *buf, const loff_t *ppos, size_t count)
 {
         struct inode *inode;
@@ -1000,7 +1008,7 @@ nvfs_direct_io(int op, struct file *filp, char __user *buf,
         else
 #endif
         {
-		ret = rw_verify_area(op, filp, buf, &ppos, len);
+		ret = nvfs_rw_verify_area(op, filp, buf, &ppos, len);
 		#ifdef SIMULATE_BUG_RW_VERIFY_FAILURE
 		ret = -EINVAL;
 		#endif

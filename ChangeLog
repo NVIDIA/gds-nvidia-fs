@@ -1,29 +1,31 @@
-nvidia-fs (2.14.13) RELEASE; urgency=low
- 
-  * Removed HIPRI support.
+nvidia-fs (2.15.1) RELEASE; urgency=low
+  * Added configure option to handle change in kiocb callback ki_complete with two parameters
+ -- Feb 2023
 
+nvidia-fs (2.14.13) RELEASE; urgency=low
+  * Removed HIPRI support.
  -- Nov 2022
 
 nvidia-fs (2.14.12) RELEASE; urgency=low
- 
   * Minor bug fixes
-
  -- Oct 2022
 
 nvidia-fs (2.13) RELEASE; urgency=low
- 
   * Minor bug fixes
 
 nvidia-fs (2.12) RELEASE; urgency=low
  * minor fixes to support newer kernels 
  --   Mar 2022
+
 nvidia-fs (2.11) RELEASE; urgency=low
  * no changes, version bump for minor releases
  --   Mar 2022
+
 nvidia-fs (2.10) RELEASE; urgency=low
  * Enable batch API support for GDS
  * performance improvements in munmap
  --   Jan 2022
+
 nvidia-fs (2.9) RELEASE; urgency=low
  * Enable MOFEDPeerDirect support using nvidia_peermem.ko
  --   Mon 15 Nov 2021
@@ -33,74 +35,47 @@ nvidia-fs (2.8) RELEASE; urgency=low
  --   Thu, 15 Oct 2021
 
 nvidia-fs (2.7) RELEASED; urgency=low
-
  * Add read support for IBM GPFS using userspace RDMA DC transport 
-
  --   Thu, 15 Jun 2021
 
 nvidia-fs (2.6) RELEASED; urgency=low
-
   * NUMA-based pcie peer affinity computation
-
   * Minor bug fixes to improve resiliency and supportability
-
  --   Thu, 25 Feb 2021
 
 nvidia-fs (2.5) RELEASED; urgency=low
-
   * Add support for Excelero Block Devices
-
  --   Mon, 2 Feb 2021
 
 nvidia-fs (2.4) RELEASED; urgency=low
-
   * Fix GDS hangs when process exits while the pages are mapped in rpcrdma
     driver
-
  --   Thu, 28 Jan 2021
 
 nvidia-fs (2.3) RELEASED; urgency=low
-
   * Add support for Scaleflux Block Devices
-
  --   Thu, 15 Oct 2020
 
 nvidia-fs (2.2) RELEASED; urgency=low
-
   * Minor bug fixes to improve resiliency and supportability
-
  --   Fri, 02 Oct 2020
 
 nvidia-fs (2.1) RELEASED; urgency=low
-
   * Minor bug fixes to improve resiliency and supportability
-
  --   Sat, 06 June 2020
 
 nvidia-fs (2.0) RELEASED; urgency=low
-
   * add dynamic NIC selection for distributed filesystems based on the GPU to NIC affinity
-
   * add additional stats to track cross-root-port access and peer affinity stats
-
   * add feature bits into vendor registration APIs to support backward compatibility
-
   * clean up the registration function signature to handle callback feature bits
-
   * add additional APIs for vendor callbacks nvfs_is_gpu_page, nvfs_gpu_index and nvfs_device_priority
-
   * add additional error code to nvfs_dma_unmap_sg  NVFS_IO_ERR when nvidia-fs when called on GPU page with failed DMA mapping
-
   * Minor bug fixes to improve resiliency and supportability
-
  --   Mon, 27 April 2020
 
 nvidia-fs (1.0) RELEASED; urgency=low
-
   * Alpha release with nvidia-fs kernel driver
-
   * callback APIs and code for vendor registration and dma callbacks for blk and sg_lists
-
   * NVMe and NVMe-oF patches for internal use on EXT4 filesystem
-
  --   Thu, 29 August 2019
