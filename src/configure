@@ -242,21 +242,6 @@ if compile_prog "Checking if vm_fault_t exist in mm_types.h... "; then
 fi
 
 cat > $TEST_C <<EOF
-#include <linux/fs.h>
-#include "test.h"
-
-int test (void)
-{
-        int x = IOCB_HIPRI;
-
-        return x;
-}
-EOF
-if compile_prog "Checking if IOCB_HIPRI flag exists in fs.h... "; then
-        output_sym "HAVE_IOCB_HIPRI"
-fi
-
-cat > $TEST_C <<EOF
 #include <linux/pci.h>
 #include "test.h"
 
@@ -408,6 +393,25 @@ int test (void)
 EOF
 if compile_prog "Checking if blk-integrity.h is present..."; then
 	output_sym "HAVE_BLK_INTEGRITY_H"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/fs.h>
+#include "test.h"
+
+static void check_io_complete(struct kiocb *kiocb, long res, long res2) {
+        return; 
+}
+
+int test (void)
+{
+        struct kiocb common;
+        common.ki_complete = check_io_complete;
+	return 0;
+}
+EOF
+if compile_prog "Checking if KI_COMPLETE has 3 parameters ..."; then
+        output_sym "KI_COMPLETE_HAS_3_PARAMETERS"
 fi
 
 cat > $TEST_C <<EOF
