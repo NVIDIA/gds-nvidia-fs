@@ -394,7 +394,6 @@ nvfs_get_dma_address(nvfs_io_t* nvfsio,
 			WARN_ON_ONCE(1);
 			return -EIO;
 		}
-
 		ret = nvfs_nvidia_p2p_dma_map_pages(peer,
                                         page_table, dma_mapping);
 	}
@@ -1102,7 +1101,11 @@ static void nvfs_remove(int pid, struct mm_struct* mm)
 static void nvfs_free_put_endfence_page(struct nvfs_gpu_args *gpu_info)
 {
 	if (gpu_info->end_fence_page) {
+#ifdef HAVE_PIN_USER_PAGES_FAST
+		unpin_user_page(gpu_info->end_fence_page);
+#else
 		put_page(gpu_info->end_fence_page);
+#endif
 		gpu_info->end_fence_page = NULL;
 	}
 }

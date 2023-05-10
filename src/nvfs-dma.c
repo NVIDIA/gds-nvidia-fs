@@ -493,6 +493,7 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 	int ret, i = 0, nr_gpu_dma = 0, nr_cpu_dma = 0;
 	void *gpu_base_dma = NULL;
 	struct scatterlist *sg = NULL;
+	struct blk_plug *plug = NULL;
 
 	if (unlikely(nents == 0)) {
 		nvfs_err("%s:%d cannot map empty sglist\n", __func__, __LINE__);
@@ -503,8 +504,29 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 
         for_each_sg(sglist, sg, nents, i) {
 
-		if (nvme)
+		if (nvme) {
+			/*
+			 * This is a hack.
+			 * Linux Kernel 5.17 onwards, a new interface to submit a batch of requests was introduced 
+			 * in the NVMe driver called nvme_queue_rqs. When this interface is present, the block layer
+			 * submits the whole plug list to the NVMe driver, instead of individually poping out entries
+			 * and submitting one request at a time to the NVMe driver using the nvme_queue_rq interface.
+			 * Due to the introduction of this new interface, block request is popped out only 
+			 * after calling the dma map request. As nvfs_nvidia_p2p_dma_map_pages() can potenitally 
+			 * block and if that happens the scheduler would add this plug list to another queue, which 
+			 * will be picked by a kernel thread(kblockd) in the future. Now once the 
+			 * nvfs_nvidia_p2p_dma_map_pages() call gets rescheduled, there is a potential 
+			 * for a race where the application thread and kblockd would be working on the 
+			 * same request and potenitally cause a race. The below hack is to set 
+			 * the current task's plug to NULL before calling the nvfs_nvidia_p2p_dma_map_pages(), so 
+			 * that the scheduler does add this entry to another list which will be eventually picked up
+			 * by kblockd. This way only one thread would be working on the request at a time.
+			 */
+			plug = current->plug;
+			current->plug = NULL;
 			ret = nvfs_get_dma(to_pci_dev(device), sg_page(sg), &gpu_base_dma, -1);
+			current->plug = plug;
+		}
 		else
 			ret = nvfs_get_dma(to_pci_dev(device), sg_page(sg), &gpu_base_dma, sg->length);
 
