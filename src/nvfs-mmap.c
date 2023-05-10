@@ -280,15 +280,21 @@ static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
 		goto failed;
 	}
 
+#ifdef HAVE_PIN_USER_PAGES_FAST
+	unpin_user_page(page);
+#else
 	put_page(page);
-
+#endif
 	return nvfs_mgroup;
 
 failed:
 	nvfs_mgroup_put(nvfs_mgroup);
 release_page:
+#ifdef HAVE_PIN_USER_PAGES_FAST
+	unpin_user_page(page);
+#else
 	put_page(page);
-
+#endif
 out:
 	return NULL;
 }
@@ -414,7 +420,11 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
                    (unsigned long)pages[j], nvfs_mgroup, cur_base_index,
                    pages[j]->index, pages[j]->flags);
 		// No need of page reference as we already have one when inserting page to VMA
-                put_page(pages[j]);
+#ifdef HAVE_PIN_USER_PAGES_FAST
+		unpin_user_page(pages[j]);
+#else
+		put_page(pages[j]);
+#endif
 	}
 
         BUG_ON(nvfs_mgroup->nvfs_ppages == NULL);
@@ -426,7 +436,11 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 failed:
 	if ((ret > 0) && (ret != count)) {
 		for (j = 0; j < ret; j++) {
+#ifdef HAVE_PIN_USER_PAGES_FAST
+			unpin_user_page(pages[j]);
+#else
 			put_page(pages[j]);
+#endif
 		}
 	}
 out:
