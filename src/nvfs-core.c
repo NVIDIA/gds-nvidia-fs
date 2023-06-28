@@ -2378,7 +2378,11 @@ struct file_operations nvfs_dev_fops = {
         .owner = THIS_MODULE,
 };
 
+#ifdef HAVE_NO_CONST_DEVICE_IN_DEVNODE
 static char *nvfs_devnode(struct device *dev, umode_t *mode)
+#else
+static char *nvfs_devnode(const struct device *dev, umode_t *mode)
+#endif
 {
         if (!mode)
                 return NULL;
