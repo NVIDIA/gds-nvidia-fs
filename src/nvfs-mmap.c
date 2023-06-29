@@ -668,8 +668,12 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 	spin_lock(&lock);
         tries = 10;
         do {
+#ifdef HAVE_PRANDOM_U32
                 base_index = NVFS_MIN_BASE_INDEX + (unsigned long)prandom_u32();
-                nvfs_mgroup = nvfs_mgroup_get_unlocked(base_index);
+#else
+                base_index = NVFS_MIN_BASE_INDEX + (unsigned long)get_random_u32();
+#endif
+		nvfs_mgroup = nvfs_mgroup_get_unlocked(base_index);
                 if (unlikely(nvfs_mgroup && tries--)) {
                         nvfs_mgroup_put(nvfs_mgroup);
                         continue;

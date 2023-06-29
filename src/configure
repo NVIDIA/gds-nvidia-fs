@@ -434,6 +434,39 @@ if compile_prog "Checking if pin_user_pages_fast symbol is present in kernel or 
         output_sym "HAVE_PIN_USER_PAGES_FAST"
 fi
 
+cat > $TEST_C <<EOF
+#include <linux/random.h>
+#include "test.h"
+
+int test (void)
+{
+	unsigned int temp = prandom_u32();
+	return 0;
+}
+EOF
+if compile_prog "Checking if prandom_u32 symbol is present in kernel or not ..."; then
+        output_sym "HAVE_PRANDOM_U32"
+fi
+
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/device.h>
+static char *temp_devnode(struct device *dev, umode_t *mode)
+{
+	return NULL;
+}
+int test (void)
+{
+	struct class *temp;
+	temp->devnode = temp_devnode;
+	return 0;
+}
+EOF
+if compile_prog "Checking if devnode in class has doesn't have const device or not ..."; then
+        output_sym "HAVE_NO_CONST_DEVICE_IN_DEVNODE"
+fi
+
 echo "#endif" >> $config_host_h
 rm -rf build
 
