@@ -293,6 +293,7 @@ static void nvfs_get_pages_free_callback(void *data)
 	int bkt = 0;
 	struct pci_dev_mapping *pci_dev_mapping;
 	nvfs_ioctl_metapage_ptr_t nvfs_ioctl_mpage_ptr;
+	void *kaddr, *orig_kaddr;
 
 	nvfs_stat(&nvfs_n_callbacks);
 
@@ -342,16 +343,12 @@ static void nvfs_get_pages_free_callback(void *data)
 			nvfs_err("Error when freeing page table\n");
 	}
 
-#if 0
-	// terminated state is the terminal state
-	if (unlikely(atomic_cmpxchg(&gpu_info->io_state, IO_TERMINATED,
-				IO_CALLBACK_END) != IO_TERMINATED))
-		BUG();
-#endif
-
-	nvfs_ioctl_mpage_ptr = kmap_atomic(gpu_info->end_fence_page);
+	kaddr = kmap_atomic(gpu_info->end_fence_page);
+	orig_kaddr = kaddr;
+	kaddr = (void*)((char*)kaddr + gpu_info->offset_in_page);
+	nvfs_ioctl_mpage_ptr = (nvfs_ioctl_metapage_ptr_t) kaddr;
 	nvfs_ioctl_mpage_ptr->state = NVFS_IO_META_DIED;
-	kunmap_atomic(nvfs_ioctl_mpage_ptr);
+	kunmap_atomic(orig_kaddr);
 	nvfs_dbg("marking end fence state dead\n");
 
 	// Reference taken during nvfs_map()
@@ -563,7 +560,7 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
         dma_addr_t dma_base_addr, dma_start_addr;
         unsigned long gpu_page_index = ULONG_MAX;
         struct nvfs_io* nvfsio;
-        pgoff_t pgoff;
+        pgoff_t pgoff = 0;
 	nvfs_mgroup_ptr_t nvfs_mgroup;
 	struct nvfs_gpu_args *gpu_info;
 	uint64_t pdevinfo;
@@ -619,7 +616,8 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
         dma_base_addr = dma_mapping->dma_addresses[gpu_page_index];
         BUG_ON(dma_base_addr == 0);
 	// 4K page-level offset
-        BUG_ON(pgoff > (GPU_PAGE_SIZE -PAGE_SIZE));
+	// for 64K page we expect pgoff to be 0
+        BUG_ON(pgoff > (GPU_PAGE_SIZE - PAGE_SIZE));
         dma_start_addr = dma_base_addr + pgoff;
 
 	#ifdef SIMULATE_BUG_DMA_DISCONTIG
@@ -711,9 +709,12 @@ bad_request:
 
 nvfs_io_sparse_dptr_t nvfs_io_map_sparse_data(nvfs_mgroup_ptr_t nvfs_mgroup)
 {
-        nvfs_ioctl_metapage_ptr_t nvfs_ioctl_mpage_ptr =
-			kmap_atomic(nvfs_mgroup->gpu_info.end_fence_page);
-        nvfs_io_sparse_dptr_t sparse_ptr = &nvfs_ioctl_mpage_ptr->sparse_data;
+        nvfs_ioctl_metapage_ptr_t nvfs_ioctl_mpage_ptr;
+        nvfs_io_sparse_dptr_t sparse_ptr;
+	void *kaddr = kmap_atomic(nvfs_mgroup->gpu_info.end_fence_page);
+	kaddr = (void*)((char*)kaddr + nvfs_mgroup->gpu_info.offset_in_page);
+	nvfs_ioctl_mpage_ptr = (nvfs_ioctl_metapage_ptr_t) kaddr;
+        sparse_ptr = &nvfs_ioctl_mpage_ptr->sparse_data;
         sparse_ptr->nvfs_start_magic = NVFS_START_MAGIC;
         sparse_ptr->nvfs_meta_version = 1;
         sparse_ptr->nholes = 0;
@@ -783,14 +784,17 @@ void nvfs_io_free(nvfs_io_t* nvfsio, long res)
 	//For Async case, it's certain that mgroup wouldn't have been freed and hence 
 	//we can mark the state Async state as Done after mgroup put as well
 	if (!sync) {
+		nvfs_ioctl_metapage_ptr_t mpage_ptr;
 		void *kaddr = kmap_atomic(gpu_info->end_fence_page);
-		nvfs_ioctl_metapage_ptr_t mpage_ptr =
-				(nvfs_ioctl_metapage_ptr_t) kaddr;
+		void *orig_kaddr = kaddr;
+		kaddr = (void*)((char*)kaddr + gpu_info->offset_in_page);
+		mpage_ptr = (nvfs_ioctl_metapage_ptr_t) kaddr;
                 //User space library is polling on these values
 		mpage_ptr->result = res;
 		wmb();
+		nvfs_dbg("freeing nvfs io end_fence_page: %llx and offset in page : %u in kernel\n", (u64)gpu_info->end_fence_page, gpu_info->offset_in_page);
 		mpage_ptr->end_fence_val = nvfsio->end_fence_value;
-		kunmap_atomic(kaddr);
+		kunmap_atomic(orig_kaddr);
 		nvfs_dbg("Async - nvfs_io complete. res %ld\n",
 				res);
 	}
@@ -1056,13 +1060,14 @@ static int nvfs_open(struct inode *inode, struct file *file)
 
 	mutex_lock(&nvfs_module_mutex);
 	nvfs_get_ops();
-	
+
 	if(nvfs_nvidia_p2p_init()) {
 		nvfs_err("Could not load nvidia_p2p* symbols\n");
 		nvfs_put_ops();
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
+
 	ret = nvfs_blk_register_dma_ops();
 	if (ret < 0) {
 		nvfs_err("nvfs modules probe failed with error :%d\n", ret);
@@ -1127,7 +1132,7 @@ static int nvfs_get_endfence_page(nvfs_ioctl_map_t *input_param,
 		goto out;
 	}
 
-	if ((unsigned long) end_fence & (PAGE_SIZE -1)) {
+	if ((unsigned long) end_fence & (NVFS_BLOCK_SIZE -1)) {
 		nvfs_err("%s:%d end_fence address not aligned\n",
 				__func__, __LINE__);
 		goto out;
@@ -1155,6 +1160,8 @@ static int nvfs_get_endfence_page(nvfs_ioctl_map_t *input_param,
 		goto out;
 	}
 
+	gpu_info->offset_in_page = (u32)((u64)end_fence % PAGE_SIZE);
+	nvfs_dbg("successfully pinned end fence address : %llx, end_fence_page : %llx offset in page : %ux in kernel\n", (u64)end_fence, (u64)gpu_info->end_fence_page, gpu_info->offset_in_page);
 	return 0;
 out:
 	return ret;
@@ -1256,20 +1263,21 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
         }
 
         if(gpu_buf_len < GPU_PAGE_SIZE &&
-		(input_param->sbuf_block * PAGE_SIZE) <
+		(input_param->sbuf_block * NVFS_BLOCK_SIZE) <
 		(gpuvaddr - gpu_virt_start + gpu_buf_len))
         {
-		nvfs_err("invalid shadow buf size provided %ld, gpu_buf_len: %lld, gpuvaddr: %llx \n",
-				input_param->sbuf_block * PAGE_SIZE, gpu_buf_len, gpuvaddr);
+		nvfs_err("invalid shadow buf size provided %u, gpu_buf_len: %lld, gpuvaddr: %llx \n",
+				input_param->sbuf_block * NVFS_BLOCK_SIZE, gpu_buf_len, gpuvaddr);
 		goto error;
         }
 
 	rounded_size = round_up((gpu_virt_end - gpu_virt_start + 1),
 				GPU_PAGE_SIZE);
 
-	nvfs_dbg("gpu_addr 0x%llx cpu_addr 0x%llx\n",
+	nvfs_dbg("gpu_addr 0x%llx cpu_addr 0x%llx gpu_buf_len %llu\n",
 			input_param->gpuvaddr,
-			input_param->cpuvaddr);
+			input_param->cpuvaddr,
+			gpu_buf_len);
 
         gpu_info->gpu_buf_len = gpu_buf_len;
 	gpu_info->gpuvaddr = gpuvaddr;
@@ -1453,7 +1461,7 @@ static int nvfs_map(nvfs_ioctl_map_t *input_param)
 	nvfs_get_ops();
 
         nvfs_mgroup = nvfs_mgroup_pin_shadow_pages(input_param->cpuvaddr,
-				input_param->sbuf_block * PAGE_SIZE);
+				input_param->sbuf_block * NVFS_BLOCK_SIZE);
 	if (!nvfs_mgroup) {
 		nvfs_err("%s:%d Error nvfs_setup_shadow_buffer\n",
 				__func__, __LINE__);
@@ -1546,8 +1554,8 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 		return ERR_PTR(ret);
 	}
 
-	if (offset_in_page(ioargs->offset) ||
-			offset_in_page(ioargs->size)) {
+	if (ioargs->offset % NVFS_BLOCK_SIZE ||
+			ioargs->size % NVFS_BLOCK_SIZE) {
 		nvfs_err("%s:%d offset = %lld size = %llu not sector aligned\n",
 				__func__, __LINE__,
 				ioargs->offset,
@@ -1705,8 +1713,11 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 
 	gpu_virt_start  = (gpu_info->gpuvaddr & GPU_PAGE_MASK);
         va_offset = ((u64)gpu_info->gpuvaddr - gpu_virt_start) +
-						file_args->devptroff;
-	if (offset_in_page(va_offset)) {
+		file_args->devptroff;
+	nvfs_dbg("gpuvaddr : %llu, gpu_virt_start : %llu, devptroff : %llu, va_offset : %llu\n",
+			(u64)gpu_info->gpuvaddr, (u64)gpu_virt_start, (u64) file_args->devptroff, va_offset);
+
+	if (va_offset % NVFS_BLOCK_SIZE) {
 		nvfs_err("gpu_va_offset not aligned va_offset %ld "
 			"devptroff %ld\n",
 			(unsigned long)va_offset,
@@ -1751,7 +1762,7 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT	
 	//If use_rkey is set, then set the appropriate segments for this IO
 	if(nvfsio->use_rkeys) {
-		shadow_buf_size = nvfs_mgroup->nvfs_pages_count * PAGE_SIZE;
+		shadow_buf_size = nvfs_mgroup->nvfs_blocks_count * NVFS_BLOCK_SIZE;
 		rdma_seg_offset = va_offset % shadow_buf_size;
 		nvfsio->rdma_seg_offset = rdma_seg_offset;
 		nvfs_dbg("%s: set curr rdma segment offset = %lu\n",
@@ -1912,8 +1923,8 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
         loff_t fd_offset = nvfsio->fd_offset;
 	u64 va_offset = 0;
         int op = nvfsio->op;
-        unsigned long shadow_buf_size = (nvfs_mgroup->nvfs_pages_count) *
-						PAGE_SIZE;
+        unsigned long shadow_buf_size = (nvfs_mgroup->nvfs_blocks_count) *
+						NVFS_BLOCK_SIZE;
 	ssize_t rdma_seg_offset = 0;
 
         nvfs_dbg("Ring %s: m_pDBuffer=%lx BufferSize=%lu TotalRWSize:%ld "
@@ -1973,7 +1984,7 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 	nvfs_dbg("%s rdma offset = %lu\n", __func__, rdma_seg_offset);
 
 	while (bytes_left) {
-                int nr_pages;
+                int nr_blocks;
                 size_t bytes_issued;
 
 		// Check if there are any callbacks or munmaps
@@ -1988,17 +1999,17 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 		}
 
 		bytes_issued = min((long) bytes_left, (long)shadow_buf_size - (long)rdma_seg_offset);
-		BUG_ON(offset_in_page(bytes_issued));
+		//BUG_ON(offset_in_page(bytes_issued));
+		BUG_ON(bytes_issued % NVFS_BLOCK_SIZE);
 
-                nr_pages = DIV_ROUND_UP(bytes_issued, PAGE_SIZE);
-
-                nvfs_dbg("Num 4k Pages in process address "
-			"nr_pages=%d bytes_left=%lu "
-                        "%s bytes_issued=%lu nvfsio 0x%p rdma_seg_offset %lu use_rkey:%d \n",
-                        nr_pages, bytes_left, opstr(op), bytes_issued, nvfsio,
+		nr_blocks = DIV_ROUND_UP(bytes_issued, NVFS_BLOCK_SIZE);
+                nvfs_dbg("Num blocks in process address "
+			"nr_blocks=%d bytes_left=%lu "
+                        "%s bytes_issued=%lu nvfsio 0x%p rdma_seg_offset %lu use_rkey:%d\n",
+                        nr_blocks, bytes_left, opstr(op), bytes_issued, nvfsio,
 			rdma_seg_offset, nvfsio->use_rkeys);
 
-                ret = nvfs_mgroup_fill_mpages(nvfs_mgroup, nr_pages);
+                ret = nvfs_mgroup_fill_mpages(nvfs_mgroup, nr_blocks);
 		// Check if there are any callbacks or munmaps
 		if (ret < 0) {
 			nvfs_err("%s:%d shadow buffer misaligned for gpu page_offset: 0x%llx bytes_issued: %ld bytes"
@@ -2100,7 +2111,7 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
         }
 
 #ifdef SIMULATE_LESS_BYTES
-    if (bytes_done > 4096) {
+    if (bytes_done > NVFS_BLOCK_SIZE) {
 	bytes_done -= 4091;
 	nvfs_info("truncate request size :%lu\n", bytes_done);
     }

@@ -25,10 +25,20 @@
 #include <linux/hashtable.h>
 #include <linux/rculist.h>
 #include <linux/device.h>
+#include <linux/log2.h>
 #include "nv-p2p.h"
 
+#define KiB4			(4096)
+#define NVFS_BLOCK_SIZE		(4096)
+#define NVFS_BLOCK_SHIFT	(12)
+#define METADATA_BLOCK_INDEX(bv_offset) ((bv_offset) / NVFS_BLOCK_SIZE)
+#define METADATA_BLOCK_START_INDEX(bv_offset) (METADATA_BLOCK_INDEX(bv_offset))
+#define METADATA_BLOCK_END_INDEX(bv_offset, bv_len) (METADATA_BLOCK_INDEX((bv_offset) + (bv_len) - 1))
 #define NVFS_MIN_BASE_INDEX   ((unsigned long)1L<<32)
-#define NVFS_MAX_SHADOW_PAGES_ORDER 12
+#ifndef NVFS_PAGE_TO_BLOCK_ORDER
+#define NVFS_PAGE_TO_BLOCK_ORDER ((int)ilog2(PAGE_SIZE / NVFS_BLOCK_SIZE))
+#endif
+#define NVFS_MAX_SHADOW_PAGES_ORDER (12 - NVFS_PAGE_TO_BLOCK_ORDER)
 #define NVFS_MAX_SHADOW_ALLOCS_ORDER 12
 #define NVFS_MAX_SHADOW_PAGES (1 << NVFS_MAX_SHADOW_PAGES_ORDER)
 
@@ -38,7 +48,7 @@
 
 struct nvfs_gpu_args;
 
-enum nvfs_page_state {
+enum nvfs_block_state {
       NVFS_IO_FREE = 0,  // set on init
       NVFS_IO_ALLOC,
       NVFS_IO_INIT,
@@ -98,8 +108,8 @@ typedef struct nvfs_io {
         bool check_sparse;              // set if file is sparse
         bool rw_stats_enabled;
         unsigned long cur_gpu_base_index;   // starting gpu index in this op
-        unsigned long nvfs_active_pages_start;
-        unsigned long nvfs_active_pages_end;
+        unsigned long nvfs_active_blocks_start;
+        unsigned long nvfs_active_blocks_end;
         nvfs_metastate_enum state;      // set if the io encountered sparse data
         int retrycnt;                   // retry count for retriable errors
         wait_queue_head_t rw_wq;        // wait queue for serializing parallel dma req
@@ -121,6 +131,7 @@ struct nvfs_gpu_args {
         u64 gpuvaddr;                               // GPU Buffer address
         u64 gpu_buf_len;                            // length of gpu buffer
         struct page *end_fence_page;                // end fence addr pinned page
+	u32 offset_in_page;                         // end_fence_addr byte offset in end_fence_page
         atomic_t io_state;                    	    // IO state transitions
         atomic_t dma_mapping_in_progress;	    // Mapping in progress for a specific PCI device
 	atomic_t callback_invoked;
@@ -134,7 +145,7 @@ struct nvfs_gpu_args {
 
 struct nvfs_io_metadata {
 	u64 nvfs_start_magic;                       // start magic of metadata
-	enum nvfs_page_state nvfs_state;
+	enum nvfs_block_state nvfs_state;
 	struct page *page;
 } __attribute__((packed, aligned(8)));
 
@@ -161,7 +172,7 @@ struct nvfs_io_mgroup {
         struct hlist_node hash_link;
 	u64 cpu_base_vaddr;
         unsigned long base_index;
-        unsigned long nvfs_pages_count;
+        unsigned long nvfs_blocks_count;
         struct page **nvfs_ppages;
         struct nvfs_io_metadata *nvfs_metadata;
 	struct nvfs_gpu_args gpu_info;
@@ -183,15 +194,15 @@ int nvfs_mgroup_mmap(struct file *filp, struct vm_area_struct *vma);
 nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index);
 void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup);
 void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup);
-void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_page_state state, bool validate, bool update_nvfsio);
+void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_state state, bool validate, bool update_nvfsio);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page(struct page* page);
-nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int npages);
+nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int nblocks, unsigned int start_offset);
 bool nvfs_is_gpu_page(struct page *page);
 unsigned int nvfs_gpu_index(struct page *page);
-int nvfs_check_gpu_page_and_error(struct page *page);
+int nvfs_check_gpu_page_and_error(struct page *page, unsigned int offset, unsigned int len);
 unsigned int nvfs_device_priority(struct device *dev, unsigned int gpu_index);
 
-int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_pages);
+int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_blocks);
 nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long length);
 void nvfs_mgroup_unpin_shadow_pages(nvfs_mgroup_ptr_t nvfs_mgroup);
 nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr(u64 cpuvaddr);
@@ -200,4 +211,9 @@ uint64_t nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup_ptr_t nvfs_mgroup, str
 void nvfs_mgroup_put_pending_mgroups(void);
 void nvfs_mgroup_get_ref(nvfs_mgroup_ptr_t mgroup);
 bool nvfs_mgroup_put_ref(nvfs_mgroup_ptr_t mgroup);
+int is_nvfs_metadata_block_fill_needed(void);
+int nvfs_mgroup_metadata_set_dma_state(struct page* page,
+                                       struct nvfs_io_mgroup *nvfs_mgroup,
+                                       unsigned int bv_len,
+                                       unsigned int bv_offset);
 #endif /* NVFS_MMAP_H */

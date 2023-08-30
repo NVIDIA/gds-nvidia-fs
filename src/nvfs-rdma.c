@@ -55,7 +55,7 @@ int nvfs_set_rdma_reg_info_to_mgroup(
 		goto error;
 	}
 	
-	shadow_buf_size = (nvfs_mgroup->nvfs_pages_count) * PAGE_SIZE;
+	shadow_buf_size = (nvfs_mgroup->nvfs_blocks_count) * NVFS_BLOCK_SIZE;
 
 	
 	nvfs_dbg("SG: %s nvfs_mgroup = %p\n GPU vaddr: %llx", __func__,
@@ -133,7 +133,7 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 		printk("SG Error: nvfs_mgroup NULL\n");
 		return -EINVAL;
 	}
-	shadow_buf_size = (nvfs_mgroup->nvfs_pages_count) * PAGE_SIZE;
+	shadow_buf_size = (nvfs_mgroup->nvfs_blocks_count) * NVFS_BLOCK_SIZE;
 	
 	nvfs_dbg("%s nvfs_mgroup = %p sbuf size = %llu\n", __func__,
 			nvfs_mgroup, shadow_buf_size);
@@ -162,8 +162,8 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 	tmp_vaddr = rdma_reg_info_args->nvfs_rdma_info.rem_vaddr;
 	i = 0;
 	for_each_sg(sgl, sg, tmp_nents, i) {
-		tmp_offset = tmp_vaddr % PAGE_SIZE;
-	       	tmp_size = PAGE_SIZE - tmp_offset;
+		tmp_offset = tmp_vaddr % NVFS_BLOCK_SIZE;
+	       	tmp_size = NVFS_BLOCK_SIZE - tmp_offset;
 #ifdef HAVE_PIN_USER_PAGES_FAST
 		if(pin_user_pages_fast(tmp_vaddr, 1, 1, &tmp_page) < 0) {
 #else
