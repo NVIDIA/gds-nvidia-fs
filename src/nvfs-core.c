@@ -1061,17 +1061,9 @@ static int nvfs_open(struct inode *inode, struct file *file)
 	mutex_lock(&nvfs_module_mutex);
 	nvfs_get_ops();
 
-	if(nvfs_nvidia_p2p_init()) {
-		nvfs_err("Could not load nvidia_p2p* symbols\n");
-		nvfs_put_ops();
-		ret = -EOPNOTSUPP;
-		goto out;
-	}
-
 	ret = nvfs_blk_register_dma_ops();
 	if (ret < 0) {
 		nvfs_err("nvfs modules probe failed with error :%d\n", ret);
-		nvfs_nvidia_p2p_exit();
 		nvfs_put_ops();
 		goto out;
 	}
@@ -1089,7 +1081,6 @@ static int nvfs_close(struct inode *inode, struct file *file)
 	nvfs_put_ops();
 	if (nvfs_count_ops() == 0) {
 		nvfs_blk_unregister_dma_ops();
-		nvfs_nvidia_p2p_exit();
 		nvfs_dbg("Unregistering dma ops and nvidia p2p ops\n");
 	}
 	mutex_unlock(&nvfs_module_mutex);

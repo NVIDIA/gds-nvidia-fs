@@ -44,7 +44,7 @@ ccflags-y += -Wall
 ccflags-y += -I$(NVIDIA_SRC_DIR)
 
 ccflags-y += -I/usr/lib/gcc/x86_64-linux-gnu/7/include/
-nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o nvfs-p2p.o
+nvidia-fs-y = nvfs-core.o nvfs-dma.o nvfs-mmap.o nvfs-pci.o nvfs-proc.o nvfs-mod.o nvfs-kernel-interface.o
 nvidia-fs-$(CONFIG_NVFS_STATS) += nvfs-stat.o
 nvidia-fs-$(CONFIG_FAULT_INJECTION) += nvfs-fault.o
 GDS_VERSION ?= $(shell cat GDS_VERSION)
