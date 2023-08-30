@@ -25,44 +25,11 @@
 
 #include "nv-p2p.h"
 
-typedef int (*nvidia_p2p_dma_unmap_pages_fptr) (struct pci_dev*,
-		struct nvidia_p2p_page_table*,
-		struct nvidia_p2p_dma_mapping*);
-typedef int (*nvidia_p2p_get_pages_fptr) (uint64_t, uint32_t,
-		uint64_t,
-		uint64_t ,
-		struct nvidia_p2p_page_table **,
-		void (*free_callback)(void *data),
-		void *);
-typedef int (*nvidia_p2p_put_pages_fptr)(uint64_t, uint32_t,
-		uint64_t,
-		struct nvidia_p2p_page_table *);
-typedef int (*nvidia_p2p_dma_map_pages_fptr)(struct pci_dev *,
-		        struct nvidia_p2p_page_table *,
-			struct nvidia_p2p_dma_mapping **);
-typedef int (*nvidia_p2p_free_dma_mapping_fptr)(struct nvidia_p2p_dma_mapping *);
-typedef int (*nvidia_p2p_free_page_table_fptr)(struct nvidia_p2p_page_table *);
-
-
-int nvfs_nvidia_p2p_dma_unmap_pages(struct pci_dev *peer,
-		struct nvidia_p2p_page_table *page_table,
-		struct nvidia_p2p_dma_mapping *dma_mapping);
-int nvfs_nvidia_p2p_get_pages(uint64_t p2p_token, uint32_t va_space,
-		uint64_t virtual_address,
-		uint64_t length,
-		struct nvidia_p2p_page_table **page_table,
-		void (*free_callback)(void *data),
-		void *data);
-int nvfs_nvidia_p2p_put_pages(uint64_t p2p_token, uint32_t va_space,
-		uint64_t virtual_address,
-		struct nvidia_p2p_page_table *page_table);
-int nvfs_nvidia_p2p_dma_map_pages(struct pci_dev *peer,
-		        struct nvidia_p2p_page_table *page_table,
-			        struct nvidia_p2p_dma_mapping **dma_mapping);
-int nvfs_nvidia_p2p_free_dma_mapping(struct nvidia_p2p_dma_mapping *dma_mapping);
-int nvfs_nvidia_p2p_free_page_table(struct nvidia_p2p_page_table *page_table);
-
-int nvfs_nvidia_p2p_init(void);
-void nvfs_nvidia_p2p_exit(void);
+#define nvfs_nvidia_p2p_get_pages  nvidia_p2p_get_pages
+#define nvfs_nvidia_p2p_put_pages nvidia_p2p_put_pages
+#define nvfs_nvidia_p2p_dma_map_pages nvidia_p2p_dma_map_pages
+#define nvfs_nvidia_p2p_dma_unmap_pages nvidia_p2p_dma_unmap_pages
+#define nvfs_nvidia_p2p_free_page_table nvidia_p2p_free_page_table
+#define nvfs_nvidia_p2p_free_dma_mapping nvidia_p2p_free_dma_mapping
 
 #endif
