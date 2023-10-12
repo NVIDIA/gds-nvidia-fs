@@ -346,7 +346,9 @@ static void __nvfs_find_all_device_paths(uint64_t paths[][MAX_PCI_DEPTH],
 			if (idx == UINT_MAX)
 				goto error;
 			gpu_info_table[idx] = pdevinfo;
-		} else if (PCI_DEV_IB(class >> 8) || PCI_DEV_NVME(class)) {
+		} else if (PCI_DEV_IB(class >> 8) ||
+			   PCI_DEV_NVME(class) ||
+			   PCI_DEV_HF(class >> 8)) {
 			idx = nvfs_create_peer_hash_entry(pdevinfo);
 			if (idx == UINT_MAX)
 				goto error;
@@ -653,6 +655,9 @@ void nvfs_fill_gpu2peer_distance_table_once(void) {
 	nvfs_dbg("nvfs listing IB paths:\n");
 	__nvfs_find_all_device_paths(peer_bdf_map, MAX_PEER_DEVS, PCI_CLASS_NETWORK_INFINIBAND << 8);
 	__nvfs_find_all_device_paths(peer_bdf_map, MAX_PEER_DEVS, PCI_CLASS_NETWORK_ETHERNET << 8);
+
+	nvfs_dbg("nvfs listing other host fabric controller (vendor specific) paths:\n");
+	__nvfs_find_all_device_paths(peer_bdf_map, MAX_PEER_DEVS, PCI_CLASS_NETWORK_HOST_FABRIC << 8);
 
 	nvfs_dbg("nvfs listing NVME paths:\n");
 	__nvfs_find_all_device_paths(peer_bdf_map, MAX_PEER_DEVS, PCI_CLASS_STORAGE_EXPRESS);
