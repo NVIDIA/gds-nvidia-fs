@@ -542,7 +542,10 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 					return NVFS_IO_ERR;
 				}
 				// We have dma mapping set up
-				nvfs_mgroup_metadata_set_dma_state(sg_page(sg), nvfs_mgroup, sg->length, sg->offset);
+				if (nvfs_mgroup_metadata_set_dma_state(sg_page(sg), nvfs_mgroup, sg->length, sg->offset) < 0) {
+					nvfs_err("%s:%d mgroup_set_dma error\n", __func__, __LINE__);
+					ret = NVFS_IO_ERR;
+				}
 				nvfs_mgroup_put(nvfs_mgroup);
 			}
 		}

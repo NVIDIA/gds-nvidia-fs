@@ -131,7 +131,7 @@ struct nvfs_gpu_args {
         u64 gpuvaddr;                               // GPU Buffer address
         u64 gpu_buf_len;                            // length of gpu buffer
         struct page *end_fence_page;                // end fence addr pinned page
-	u32 offset_in_page;                         // end_fence_addr byte offset in end_fence_page
+        u32 offset_in_page;			    // end_fence_addr byte offset in end_fence_page
         atomic_t io_state;                    	    // IO state transitions
         atomic_t dma_mapping_in_progress;	    // Mapping in progress for a specific PCI device
 	atomic_t callback_invoked;
