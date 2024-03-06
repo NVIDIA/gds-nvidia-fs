@@ -289,6 +289,9 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
         struct scatterlist *sg = NULL;
         struct bio_vec bvec;
 	uint64_t curr_phys_addr = 0, prev_phys_addr = 0;
+        unsigned long gpu_page_index = 0;
+        pgoff_t pgoff = 0;
+
 
 #ifdef TEST_DISCONTIG_ADDR
 	int key;
@@ -416,17 +419,23 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 #else
 		curr_phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, bvec.bv_page);
 #endif
+                nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, bvec.bv_page, &gpu_page_index, &pgoff);
 		// we no longer need nvfs_mgroup from this point onwards
 		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 		nvfs_mgroup = NULL;
 
-		if (sg != NULL) {
-			if (prev_phys_addr && is_gpu_page_contiguous(prev_phys_addr, curr_phys_addr)) {
-				sg->length += bvec.bv_len;
-				prev_phys_addr = curr_phys_addr;
-				continue;
-			}
-		}
+        if (sg != NULL) {
+            if (prev_phys_addr && is_gpu_page_contiguous(prev_phys_addr, curr_phys_addr)) {
+                //DONT allow merge at (4G - 64K) to handle possible discontiguous IOVA
+                // by SMMU
+                if((gpu_page_index == 0) ||
+                        (gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES != 0)) {
+                    sg->length += bvec.bv_len;
+                    prev_phys_addr = curr_phys_addr;
+                    continue;
+                }
+            }
+        }
 
 new_segment:
 		nsegs++;

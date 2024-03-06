@@ -396,7 +396,7 @@ nvfs_get_dma_address(nvfs_io_t* nvfsio,
 	}
 
 	if (ret) {
-		nvfs_info("Unabled to obtain dma_mapping :%d for %p-%p "
+		nvfs_info("Unable to obtain dma_mapping :%d for %p-%p "
 			  "PCI_DEVID %d\n", ret, gpu_info, peer,
 			   NVFS_GET_PCI_DEVID(peer));
 		goto out;
@@ -1303,9 +1303,14 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
             nvfs_dbg("GPU Physical page[%d]=0x%016llx\n",
                 i, gpu_info->page_table->pages[i]->physical_address);
 
-	    if ((gpu_info->page_table->pages[i]->physical_address + GPU_PAGE_SIZE) !=
-			    gpu_info->page_table->pages[i + 1]->physical_address)
-		    n_phys_chunks += 1;
+            //create a new segment when the physical addresses are non contiguous
+            // or force a new segment at physical address boundary of (4G - 64k) 
+            // to handle possible SMMU mappings being non-contiguous
+            if ((gpu_info->page_table->pages[i]->physical_address + GPU_PAGE_SIZE) !=
+                            gpu_info->page_table->pages[i + 1]->physical_address)
+                    n_phys_chunks += 1;
+            else if (i > 0 && (i % NVFS_P2P_MAX_CONTIG_GPU_PAGES == 0))
+                    n_phys_chunks += 1;
         }
 
 	gpu_info->n_phys_chunks = n_phys_chunks;
@@ -2411,7 +2416,11 @@ static int __init nvfs_init(void)
 	pr_info("nvidia_fs: registered correctly with major number %d\n",
 			major_number);
 
+    #ifdef CLASS_CREATE_HAS_TWO_PARAMS
 	nvfs_class = class_create(THIS_MODULE, CLASS_NAME);
+    #else
+	nvfs_class = class_create(CLASS_NAME);
+    #endif
 
 	if (IS_ERR(nvfs_class)) {
 		unregister_chrdev(major_number, DEVICE_NAME);

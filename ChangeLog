@@ -1,3 +1,7 @@
+nvidia-fs (2.19.6) RELEASE; urgency=low
+  * Fix compilation issue for 6.5 kernel
+  * Fix bug in calculation of physical_chunks for p2p allocation
+
 nvidia-fs (2.18.3) RELEASE; urgency=low
   * Return error in DFS callback path for bad Meta data
   * Fix compilation issue for 6.2 kernel

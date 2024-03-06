@@ -179,6 +179,7 @@ fi
 
 cat > $TEST_C <<EOF
 #include <linux/fs.h>
+#include <linux/pagemap.h>
 #include "test.h"
 
 int test (void)
@@ -465,6 +466,37 @@ int test (void)
 EOF
 if compile_prog "Checking if devnode in class has doesn't have const device or not ..."; then
         output_sym "HAVE_NO_CONST_DEVICE_IN_DEVNODE"
+fi
+
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/device.h>
+#include <linux/export.h>
+int test (void)
+{
+    struct class* nvfs_class;
+    nvfs_class = class_create(THIS_MODULE, "testclass");
+    return 0;
+}
+EOF
+if compile_prog "Checking if class_create has two parameters or not ..."; then
+        output_sym "CLASS_CREATE_HAS_TWO_PARAMS"
+fi
+
+cat > $TEST_C <<EOF
+
+#include "test.h"
+#include <linux/mm_types.h>
+int test (void)
+{
+    struct vm_area_struct vma;
+    vma.vm_flags = 0;
+    return 0;
+}
+EOF
+if compile_prog "Checking if vma_flags are modifiable directly ..."; then
+        output_sym "NVFS_VM_FLAGS_NOT_CONSTANT"
 fi
 
 echo "#endif" >> $config_host_h
