@@ -229,6 +229,8 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 #define NVFS_IOCTL_BATCH_IO     	_IOW(NVFS_MAGIC, 8, int)
 #endif
 
+//Max contiguous physical GPU memory for P2P is (4GiB - 64k) or 65535 64k pages
+#define NVFS_P2P_MAX_CONTIG_GPU_PAGES 65535
 #define PAGE_PER_GPU_PAGE_SHIFT  ilog2(GPU_PAGE_SIZE / PAGE_SIZE)
 #define GPU_PAGE_SHIFT   16
 #define GPU_PAGE_SIZE    ((u64)1 << GPU_PAGE_SHIFT)

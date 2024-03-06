@@ -625,6 +625,7 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
         nvfs_mgroup_ptr_t nvfs_mgroup, nvfs_new_mgroup;
 	struct nvfs_gpu_args *gpu_info;
 	int os_pages_count;
+	vm_flags_t vm_flags;
 
 	nvfs_stat64(&nvfs_n_mmap);
         /* check length - do not allow larger mappings than the number of
@@ -643,30 +644,37 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 	        nvfs_err("mmap size not a multiple of 64K: 0x%lx for size >64k \n", length);
                 goto error;
         }
-
-        if ((vma->vm_flags & (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE)) != (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE))
+#ifdef NVFS_VM_FLAGS_NOT_CONSTANT
+	vm_flags = vma->vm_flags;
+#else
+	vm_flags = ACCESS_PRIVATE(vma, __vm_flags);
+#endif
+        if ((vm_flags & (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE)) != (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE))
         {
-	        nvfs_err("cannot open vma without PROTO_WRITE|PROT_READ flags: %lx \n", vma->vm_flags);
+	        nvfs_err("cannot open vma without PROTO_WRITE|PROT_READ flags: %lx \n", vm_flags);
                 goto error;
         }
 
-        if ((vma->vm_flags & (VM_EXEC)) != 0)
+        if ((vm_flags & (VM_EXEC)) != 0)
         {
-	        nvfs_err("cannot open vma with MAP_EXEC flags: %lx \n", vma->vm_flags);
+	        nvfs_err("cannot open vma with MAP_EXEC flags: %lx \n", vm_flags);
                 goto error;
         }
 
         /* if VM_SHARED is not set the page->mapping is not NULL */
-        if ((vma->vm_flags & (VM_SHARED)) == 0)
+        if ((vm_flags & (VM_SHARED)) == 0)
         {
-	       nvfs_err("cannot open vma without MAP_SHARED: %lx \n", vma->vm_flags);
+	       nvfs_err("cannot open vma without MAP_SHARED: %lx \n", vm_flags);
                goto error;
         }
 
         /* dont allow mremap to expand and dont allow copy on fork */
+#ifdef NVFS_VM_FLAGS_NOT_CONSTANT
         vma->vm_flags |= VM_IO | VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY;
+#else
+        vm_flags_set(vma, VM_IO | VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY);
+#endif
         vma->vm_ops = &nvfs_mmap_ops;
-
         nvfs_new_mgroup = (nvfs_mgroup_ptr_t)kzalloc(sizeof(struct nvfs_io_mgroup), GFP_KERNEL);
 	if (!nvfs_new_mgroup) {
 		ret = -ENOMEM;
@@ -1255,8 +1263,8 @@ int nvfs_mgroup_metadata_set_dma_state(struct page* page,
 		if(nvfs_mpage->nvfs_state != NVFS_IO_QUEUED &&
 				nvfs_mpage->nvfs_state != NVFS_IO_DMA_START)
 		{
-			nvfs_err("%s: found page in wrong state: %d, page->index: %ld at block: %d len: %u and offset: %u\n",
-					__func__, nvfs_mpage->nvfs_state, page->index % NVFS_MAX_SHADOW_PAGES, i, bv_len, bv_offset);
+		        nvfs_err("%s: found page in wrong state: %d, page->index: %ld at block: %d len: %u and offset: %u\n",
+                                        __func__, nvfs_mpage->nvfs_state, page->index % NVFS_MAX_SHADOW_PAGES, i, bv_len, bv_offset);		
 			nvfs_mpage->nvfs_state = NVFS_IO_DMA_ERROR;
 			nvfs_mgroup_put(nvfs_mgroup);
 			WARN_ON_ONCE(1);
