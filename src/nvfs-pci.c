@@ -54,7 +54,9 @@ const unsigned char nvfs_pcie_link_speed_table[MAX_LNKSPEED_ENTRIES] = {
 #ifdef HAVE_PCIE_SPEED_32_0GT
 	PCIE_SPEED_32_0GT,		/* 5 */
 #endif
-	PCI_SPEED_UNKNOWN,		/* 6 */
+#ifdef HAVE_PCIE_SPEED_64_0GT
+	PCIE_SPEED_64_0GT,		/* 6 */
+#endif
 	PCI_SPEED_UNKNOWN,		/* 7 */
 	PCI_SPEED_UNKNOWN,		/* 8 */
 	PCI_SPEED_UNKNOWN,		/* 9 */
@@ -309,8 +311,8 @@ static void __nvfs_find_all_device_paths(uint64_t paths[][MAX_PCI_DEPTH],
 	unsigned int count = 0, bw = 0;
 	unsigned short depth;
 	struct pci_dev *pdev = NULL, *ppdev = NULL;
-	enum pci_bus_speed lnk_speed = PCIE_LNK_WIDTH_RESRV;
-	enum pcie_link_width lnk_width = PCI_SPEED_UNKNOWN;
+	enum pci_bus_speed lnk_speed = PCI_SPEED_UNKNOWN;
+	enum pcie_link_width lnk_width = PCIE_LNK_WIDTH_UNKNOWN;
 
 	while ((pdev = pci_get_class(class, pdev)) != NULL) {
 		uint64_t pdevinfo;
