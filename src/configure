@@ -258,6 +258,21 @@ if compile_prog "Checking if enum PCIE_SPEED_32_0GT exists in pci.h... "; then
 fi
 
 cat > $TEST_C <<EOF
+#include <linux/pci.h>
+#include "test.h"
+
+int test (void)
+{
+        int x = PCIE_SPEED_64_0GT;
+
+        return x;
+}
+EOF
+if compile_prog "Checking if enum PCIE_SPEED_64_0GT exists in pci.h... "; then
+        output_sym "HAVE_PCIE_SPEED_64_0GT"
+fi
+
+cat > $TEST_C <<EOF
 #include <linux/types.h>
 #include "test.h"
 
