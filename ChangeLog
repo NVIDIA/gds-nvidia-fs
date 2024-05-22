@@ -1,3 +1,6 @@
+nvidia-fs (2.20.5) RELEASE; urgency=low
+  * Memset sglist beyond blk_rq_nr_phys_segments to avoid memory corruption
+
 nvidia-fs (2.19.7) RELEASE; urgency=low
   * Fix compilation warning for 6.6 kernel
 

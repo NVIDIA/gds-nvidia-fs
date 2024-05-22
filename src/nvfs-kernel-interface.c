@@ -58,8 +58,13 @@ int nvfs_extend_sg_markers(struct scatterlist **sg)
 	return -1;
 #else
 	sg_unmark_end(*sg);
-	*sg = sg_next(*sg);
-
+	//As the NVMe driver only memsets the sglist upto blk_rq_nr_phys_segments, there is a good change that the next sg
+	//might have some stale data and calling a sg_next instead of the below fix can cause it to return a sg pointer 
+	//that is stable(Refer to sg chaining logic in sg_next). That's why incrementing and memseting the sg pointer here 
+	//is safer choice
+	*sg = *sg + 1;
+	memset(*sg, 0, sizeof(struct scatterlist));
+	sg_mark_end(*sg);
 	return 0;
 #endif
 }
