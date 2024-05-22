@@ -440,13 +440,14 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 new_segment:
 		nsegs++;
 
-		if (nsegs == 1)
+		if (nsegs == 1) {
 			sg = iod_sglist;
+		}
 		else if (!sg_is_last(sg)) {
 			sg = sg_next(sg);
 		} else {
 			// See above for the reason for extending markers.
-			if (nvfs_extend_sg_markers(&sg)) {
+			if ((nsegs >= NVME_MAX_SEGS) || (nvfs_extend_sg_markers(&sg))) {
 				nvfs_stat(&nvfs_n_err_sg_err);
 				nvfs_err("no space for entries in sglist (nsegs=%u/nr_phys=%u/found_gpu=%d)\n",
 						nsegs, blk_rq_nr_phys_segments(req), found_gpu_page);
