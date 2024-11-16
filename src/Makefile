@@ -30,6 +30,14 @@ endif
 KBUILD_MODPOST_WARN=1
 obj-m += nvidia-fs.o
 
+# check if variables are defined in the environment
+ifneq ($(origin NVFS_MAX_PEER_DEVS), undefined)
+ifneq ($(origin NVFS_MAX_PCI_DEPTH), undefined)
+    ccflags-y += -DNVFS_MAX_PEER_DEVS=$(NVFS_MAX_PEER_DEVS) -DNVFS_MAX_PCI_DEPTH=$(NVFS_MAX_PCI_DEPTH)
+endif
+endif
+
+
 ARCH ?= $(shell uname -m)
 
 ifeq ($(ARCH),aarch64)
