@@ -85,6 +85,10 @@
 #define MAJ_MIN_P_V(maj, min, patch) maj##.##min##.##patch
 #define MOD_VERS(major, minor, p) MAJ_MIN_P_V(major, minor, p)
 
+#define NVIDIA_DRIVER_PATH "/sys/module/nvidia/version"
+#define NVIDIA_DRIVER_BUF_SIZE 4
+#define NVIDIA_MIN_DRIVER_FOR_VGPU 555
+
 static int major_number;
 static struct class* nvfs_class = NULL;
 static struct device* nvfs_device[MAX_NVFS_DEVICES];
@@ -2287,7 +2291,7 @@ static long nvfs_ioctl(struct file *file, unsigned int ioctl_num,
                         local_param.ioargs.ioctl_return = PTR_ERR(nvfs_batch);
                         if (copy_to_user((void *) ioctl_param,
                                                 (void*) &local_param,
-                                                sizeof(nvfs_ioctl_param_union))) {
+                                                sizeof(nvfs_ioctl_batch_ioargs_t))) {
                                 nvfs_err("%s:%d copy_to_user failed\n", __func__, __LINE__);
                         }
                         nvfs_stat(&nvfs_n_batch_err);
@@ -2306,7 +2310,7 @@ static long nvfs_ioctl(struct file *file, unsigned int ioctl_num,
                         nvfs_stat64(&nvfs_n_batches_ok);
                 }
                 if (copy_to_user((void *) ioctl_param, (void*) &local_param,
-					sizeof(nvfs_ioctl_param_union))) {
+					sizeof(nvfs_ioctl_batch_ioargs_t))) {
 			local_param.ioargs.ioctl_return = -EFAULT;
                         nvfs_stat(&nvfs_n_batch_err);
 			nvfs_err("%s:%d copy_to_user failed\n", __func__, __LINE__);
@@ -2437,6 +2441,39 @@ static char *nvfs_devnode(const struct device *dev, umode_t *mode)
         return NULL;
 }
 
+static int get_nvidia_driver_version(void){
+	struct file *file;
+	char buf[NVIDIA_DRIVER_BUF_SIZE];
+	loff_t pos = 0;
+	ssize_t bytes_read;
+	int value;
+
+	file = filp_open(NVIDIA_DRIVER_PATH, O_RDONLY, 0);
+	if (IS_ERR(file)) {
+		nvfs_err("Error opening nvidia driver version file: %ld\n", PTR_ERR(file));
+		return -1;
+	}
+
+	bytes_read = kernel_read(file, buf, NVIDIA_DRIVER_BUF_SIZE - 1, &pos);
+
+	if (bytes_read < 0) {
+		nvfs_err("Error reading file: %ld\n", bytes_read);
+		filp_close(file, NULL);
+		return -1;
+	} else {
+		buf[bytes_read] = '\0';
+		int ret = kstrtoint(buf,10,&value);
+		if (ret != 0) {
+			nvfs_err("Failed to convert driver version to int: %s, ret: %d\n", buf, ret);
+			filp_close(file, NULL);
+			return -1;
+		}
+
+	}
+	filp_close(file, NULL);
+	return value;
+}
+
 /*
  * Initialize nvfs driver
  */
@@ -2444,13 +2481,21 @@ static int __init nvfs_init(void)
 {
 	int i;
 
+	int version= get_nvidia_driver_version();
+
+	// if the version is greater than or qequal 555, use persistent_p2p APIs
+	if (version >= NVIDIA_MIN_DRIVER_FOR_VGPU) {
+		nvfs_use_legacy_p2p_allocation = 0;
+	}
+
+	// if the driver version is less than 555, but it's x86 and BM, use the persistent_p2p APIs
 	#if defined(CONFIG_X86_64)
-	if (!cpu_feature_enabled(X86_FEATURE_HYPERVISOR)){
+	if (nvfs_use_legacy_p2p_allocation == 1  && !cpu_feature_enabled(X86_FEATURE_HYPERVISOR)){
 		// X86 and not a VM
 		nvfs_use_legacy_p2p_allocation = 0;
 	}
 	#endif
-	
+
 	pr_info("nvidia_fs: Initializing nvfs driver module\n");
 
 	major_number = register_chrdev(0, DEVICE_NAME, &nvfs_dev_fops);

@@ -40,7 +40,7 @@ int nvfs_set_rdma_reg_info_to_mgroup(
 	uint32_t nkeys;
 	int ret = -EINVAL;
 
-	nvfs_dbg("SG: %s CPU vaddr: %llx \n", __func__, rdma_reg_info_args->cpuvaddr);	
+	nvfs_dbg("%s CPU vaddr: %llx \n", __func__, rdma_reg_info_args->cpuvaddr);
 	
 	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(rdma_reg_info_args->cpuvaddr);
 	if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
@@ -58,7 +58,7 @@ int nvfs_set_rdma_reg_info_to_mgroup(
 	shadow_buf_size = (nvfs_mgroup->nvfs_blocks_count) * NVFS_BLOCK_SIZE;
 
 	
-	nvfs_dbg("SG: %s nvfs_mgroup = %p\n GPU vaddr: %llx", __func__,
+	nvfs_dbg("%s nvfs_mgroup = %p\n GPU vaddr: %llx", __func__,
 		 nvfs_mgroup, nvfs_mgroup->gpu_info.gpuvaddr);
 	
 	
@@ -130,7 +130,7 @@ int nvfs_get_rdma_reg_info_from_mgroup(
 	
 	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(rdma_reg_info_args->cpuvaddr);
 	if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
-		printk("SG Error: nvfs_mgroup NULL\n");
+		nvfs_err("Error: nvfs_mgroup NULL\n");
 		return -EINVAL;
 	}
 	shadow_buf_size = (nvfs_mgroup->nvfs_blocks_count) * NVFS_BLOCK_SIZE;
@@ -214,7 +214,6 @@ int nvfs_clear_rdma_reg_info_in_mgroup(
 	nvfs_mgroup = nvfs_get_mgroup_from_vaddr(rdma_clear_info_args->cpuvaddr);
 	if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
 		nvfs_err("%s Error:  nvfs_mgroup NULL\n", __func__);
-		printk("SG Error: nvfs_mgroup NULL\n");
 		return -1;
 	}
 
