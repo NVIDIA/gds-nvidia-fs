@@ -41,11 +41,15 @@
 	(uint32_t)((uint64_t)(pci_info) >> 32), \
 	((uint16_t)(pci_info) >> 8), PCI_SLOT((uint8_t)(pci_info)), PCI_FUNC((uint8_t)(pci_info))
 
+#if defined(NVFS_MAX_PEER_DEVS) && defined(NVFS_MAX_PCI_DEPTH)
+       #define MAX_PEER_DEVS   NVFS_MAX_PEER_DEVS
+       #define MAX_PCI_DEPTH   NVFS_MAX_PCI_DEPTH
+#else
+       #define MAX_PEER_DEVS   64U // On DGX-2, 8 IB Ports
+       #define MAX_PCI_DEPTH   16U // On DGX-2, max-depth 5
+#endif
+
 #define MAX_GPU_DEVS    64U // On DGX-2, 16 GPUS
-
-#define MAX_PEER_DEVS   64U // On DGX-2, 8 IB Ports
-
-#define MAX_PCI_DEPTH   16U // On DGX-2, max-depth 5
 
 // proc limit for pci distance under same Port
 #define PROC_LIMIT_PCI_DISTANCE_COMMONRP (2 * MAX_PCI_DEPTH)

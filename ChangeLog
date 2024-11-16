@@ -1,3 +1,5 @@
+nvidia-fs (2.24.2) RELEASE; urgency=low
+  * Provide support for more rdma devices
 nvidia-fs (2.23.1) RELEASE; urgency=low
   * Use persistent_p2p APIs >= nvidia driver version 555
   * Fix bug in copy_to_uer through batch API

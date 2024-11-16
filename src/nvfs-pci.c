@@ -643,6 +643,7 @@ static void nvfs_get_pci_gpu2peer_distance(void) {
  *  @returns : none
  */
 void nvfs_fill_gpu2peer_distance_table_once(void) {
+	pr_info("max_peer_devs : %u and max_pci_depth : %u\n", MAX_PEER_DEVS, MAX_PCI_DEPTH);
 	memset ((u8 *)gpu_bdf_map, 0, sizeof(gpu_bdf_map));
 	memset ((u8 *)peer_bdf_map, 0, sizeof(peer_bdf_map));
 	memset ((u8 *)gpu_info_table, 0, sizeof(gpu_info_table));
