@@ -100,6 +100,7 @@ int nvfs_info_enabled = 1;
 int nvfs_rw_stats_enabled = 0;
 int nvfs_peer_stats_enabled = 0;
 unsigned int nvfs_max_devices = MAX_NVFS_DEVICES;
+int nvfs_use_legacy_p2p_allocation = 1;
 
 // for storing real device count
 static unsigned int nvfs_curr_devices = 1;
@@ -1200,12 +1201,22 @@ static int nvfs_unpin_gpu_pages(struct nvfs_gpu_args *gpu_info)
 
 			nvfs_update_free_gpustat(gpu_info);
 
-			ret = nvfs_nvidia_p2p_put_pages(0, 0, gpu_page_start,
-					gpu_info->page_table);
-			if (ret) {
-				nvfs_err("%s:%d error while calling "
-						"put_pages\n",
-						__func__, __LINE__);
+			if (gpu_info->use_legacy_p2p_allocation) {
+				ret = nvfs_nvidia_p2p_put_pages(0, 0, gpu_page_start,
+						gpu_info->page_table);
+				if (ret) {
+					nvfs_err("%s:%d error while calling "
+							"put_pages\n",
+							__func__, __LINE__);
+				}
+			} else {
+				ret = nvfs_nvidia_p2p_put_pages_persistent(gpu_page_start,
+						gpu_info->page_table, 0);
+				if (ret) {
+					nvfs_err("%s:%d error while calling "
+							"put_pages_persistent\n",
+							__func__, __LINE__);
+				}
 			}
 		}
 	}
@@ -1279,22 +1290,42 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 	atomic_set(&gpu_info->dma_mapping_in_progress, 0);
 	hash_init(gpu_info->buckets);
 
-	nvfs_dbg("Invoking p2p_get_pages pages (0x%lx - 0x%lx) "
-		 "rounded size %lx\n",
-		 (unsigned long)gpu_virt_start,
-		 (unsigned long)gpu_virt_end, (unsigned long)rounded_size);
+	 
+	if (nvfs_use_legacy_p2p_allocation) {
+		gpu_info->use_legacy_p2p_allocation = 1;
+		nvfs_dbg("Invoking p2p_get_pages (0x%lx - 0x%lx) "
+			 "rounded size %lx\n",
+			 (unsigned long)gpu_virt_start,
+			 (unsigned long)gpu_virt_end, (unsigned long)rounded_size);
 
-	ret = nvfs_nvidia_p2p_get_pages(0, 0, gpu_virt_start, rounded_size,
-			       &gpu_info->page_table,
-                               nvfs_get_pages_free_callback, nvfs_mgroup);
-	if (ret < 0) {
-		nvfs_err("%s:%d Error ret %d invoking nvidia_p2p_get_pages\n "
-				"va_start=0x%llx/va_end=0x%llx/"
-				"rounded_size=0x%lx/gpu_buf_length=0x%llx\n",
-				__func__, __LINE__, ret,
-				gpu_virt_start, gpu_virt_end,
-				rounded_size, gpu_buf_len);
-		goto error;
+		ret = nvfs_nvidia_p2p_get_pages(0, 0, gpu_virt_start, rounded_size,
+					&gpu_info->page_table,
+					nvfs_get_pages_free_callback, nvfs_mgroup);
+		if (ret < 0) {
+			nvfs_err("%s:%d Error ret %d invoking nvidia_p2p_get_pages\n "
+					"va_start=0x%llx/va_end=0x%llx/"
+					"rounded_size=0x%lx/gpu_buf_length=0x%llx\n",
+					__func__, __LINE__, ret,
+					gpu_virt_start, gpu_virt_end,
+					rounded_size, gpu_buf_len);
+			goto error;
+		}
+	} else {
+		nvfs_dbg("Invoking nvidia_p2p_get_pages_persistent (0x%lx - 0x%lx) "
+			 "rounded size %lx\n",
+			 (unsigned long)gpu_virt_start,
+			 (unsigned long)gpu_virt_end, (unsigned long)rounded_size);
+
+		ret = nvfs_nvidia_p2p_get_pages_persistent(gpu_virt_start, rounded_size, &gpu_info->page_table, 0);
+		if (ret < 0) {
+			nvfs_err("%s:%d Error ret %d invoking nvidia_p2p_get_pages_persistent\n "
+					"va_start=0x%llx/va_end=0x%llx/"
+					"rounded_size=0x%lx/gpu_buf_length=0x%llx\n",
+					__func__, __LINE__, ret,
+					gpu_virt_start, gpu_virt_end,
+					rounded_size, gpu_buf_len);
+			goto error;
+		}
 	}
 
         nvfs_dbg("GPU page table entries: %d\n", gpu_info->page_table->entries);
@@ -1338,13 +1369,21 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 				 "version 0x%08x\n",
 				__func__, __LINE__,
 				gpu_info->page_table->version);
-		else if (is_invalid_page_size)
-			nvfs_err("%s:%d nvidia_p2p_get_pages "
-				 "assumption of 64KB pages failed "
-				 "size_id=%d\n",
-				 __func__, __LINE__,
-				 gpu_info->page_table->page_size);
-		else
+		else if (is_invalid_page_size){
+			if (gpu_info->use_legacy_p2p_allocation) {
+				nvfs_err("%s:%d nvidia_p2p_get_pages"
+					 "assumption of 64KB pages failed "
+					 "size_id=%d\n",
+					 __func__, __LINE__,
+					 gpu_info->page_table->page_size);
+			} else {
+				nvfs_err("%s:%d nvidia_p2p_get_pages_persistent "
+					 "assumption of 64KB pages failed "
+					 "size_id=%d\n",
+					 __func__, __LINE__,
+					 gpu_info->page_table->page_size);
+			}
+		} else
 			nvfs_err("%s:%d nvfs_invalid_p2p_get_page "
 				 "fault trigger\n",
 				 __func__, __LINE__);
@@ -1709,10 +1748,11 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 
 	gpu_virt_start  = (gpu_info->gpuvaddr & GPU_PAGE_MASK);
         va_offset = ((u64)gpu_info->gpuvaddr - gpu_virt_start) +
-		file_args->devptroff;
-	nvfs_dbg("gpuvaddr : %llu, gpu_virt_start : %llu, devptroff : %llu, va_offset : %llu\n",
-			(u64)gpu_info->gpuvaddr, (u64)gpu_virt_start, (u64) file_args->devptroff, va_offset);
-
+						file_args->devptroff;
+	nvfs_dbg("gpuvaddr : %llu, gpu_virt_start : %llu, devptroff : %llu, va_offset : %llu\n", 
+			(u64)gpu_info->gpuvaddr, (u64)gpu_virt_start, (u64) file_args->devptroff, va_offset); 
+	//if (offset_in_page(va_offset)) {
+	// TODO :: PP : Verify 
 	if (va_offset % NVFS_BLOCK_SIZE) {
 		nvfs_err("gpu_va_offset not aligned va_offset %ld "
 			"devptroff %ld\n",
@@ -2404,6 +2444,13 @@ static int __init nvfs_init(void)
 {
 	int i;
 
+	#if defined(CONFIG_X86_64)
+	if (!cpu_feature_enabled(X86_FEATURE_HYPERVISOR)){
+		// X86 and not a VM
+		nvfs_use_legacy_p2p_allocation = 0;
+	}
+	#endif
+	
 	pr_info("nvidia_fs: Initializing nvfs driver module\n");
 
 	major_number = register_chrdev(0, DEVICE_NAME, &nvfs_dev_fops);
@@ -2514,3 +2561,5 @@ module_param_named(peer_stats_enabled, nvfs_peer_stats_enabled, uint, S_IWUSR | 
 MODULE_PARM_DESC(nvfs_peer_stats_enabled, "enable peer stats");
 module_param_named(rw_stats_enabled, nvfs_rw_stats_enabled, uint, S_IWUSR | S_IRUGO);
 MODULE_PARM_DESC(nvfs_rw_stats_enabled, "enable read-write stats");
+module_param_named(use_legacy_p2p_allocation, nvfs_use_legacy_p2p_allocation, uint, S_IWUSR | S_IRUGO);
+MODULE_PARM_DESC(nvfs_use_legacy_p2p_allocation, "Use legacy p2p allocation");

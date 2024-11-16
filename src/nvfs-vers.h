@@ -26,10 +26,10 @@
 
 #define NVFS_DRIVER_MAJOR_VERSION   2 //2-bytes
 
-#define NVFS_DRIVER_MINOR_VERSION   20 //2-bytes
+#define NVFS_DRIVER_MINOR_VERSION   22 //2-bytes
 
 // template for build version
-#define NVFS_DRIVER_PATCH_VERSION  5
+#define NVFS_DRIVER_PATCH_VERSION  3
 
 static inline unsigned int nvfs_driver_version(void) {
     return (NVFS_DRIVER_MAJOR_VERSION << 16) | NVFS_DRIVER_MINOR_VERSION;

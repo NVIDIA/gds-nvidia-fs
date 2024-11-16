@@ -25,6 +25,8 @@
 
 #include "nv-p2p.h"
 
+#define nvfs_nvidia_p2p_get_pages_persistent  nvidia_p2p_get_pages_persistent
+#define nvfs_nvidia_p2p_put_pages_persistent nvidia_p2p_put_pages_persistent
 #define nvfs_nvidia_p2p_get_pages  nvidia_p2p_get_pages
 #define nvfs_nvidia_p2p_put_pages nvidia_p2p_put_pages
 #define nvfs_nvidia_p2p_dma_map_pages nvidia_p2p_dma_map_pages

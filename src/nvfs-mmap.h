@@ -137,6 +137,7 @@ struct nvfs_gpu_args {
 	atomic_t callback_invoked;
         wait_queue_head_t callback_wq;              // wait queue for IO completion
         bool is_bounce_buffer;			    // is this memory used for bounce buffer
+        bool use_legacy_p2p_allocation;             // Use legacy p2p_get/put_page()
 	int n_phys_chunks;			    // number of contiguous physical address range
         u64 pdevinfo;				    // pci domain(upper 4 bytes), bus, device, function for pci ranking
         unsigned int gpu_hash_index;                // cache gpu hash index for pci rank lookups 

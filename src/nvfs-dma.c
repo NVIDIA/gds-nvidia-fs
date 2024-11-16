@@ -424,18 +424,18 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 		nvfs_mgroup = NULL;
 
-        if (sg != NULL) {
-            if (prev_phys_addr && is_gpu_page_contiguous(prev_phys_addr, curr_phys_addr)) {
-                //DONT allow merge at (4G - 64K) to handle possible discontiguous IOVA
-                // by SMMU
-                if((gpu_page_index == 0) ||
-                        (gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES != 0)) {
-                    sg->length += bvec.bv_len;
-                    prev_phys_addr = curr_phys_addr;
-                    continue;
-                }
-            }
-        }
+		if (sg != NULL) {
+			if (prev_phys_addr && is_gpu_page_contiguous(prev_phys_addr, curr_phys_addr)) {
+                                //DONT allow merge at (4G - 64K) to handle possible discontiguous IOVA
+                                // by SMMU
+                                if((gpu_page_index == 0) ||
+                                    (gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES != 0)) {
+                                        sg->length += bvec.bv_len;
+                                        prev_phys_addr = curr_phys_addr;
+                                        continue;
+                                }
+                        }
+		}
 
 new_segment:
 		nsegs++;

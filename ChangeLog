@@ -1,3 +1,5 @@
+nvidia-fs (2.22.3) RELEASE; urgency=low
+  * Switch to nvidia_p2p_get_pages_persistent() call for baremetal on x86
 nvidia-fs (2.20.5) RELEASE; urgency=low
   * Memset sglist beyond blk_rq_nr_phys_segments to avoid memory corruption
 
