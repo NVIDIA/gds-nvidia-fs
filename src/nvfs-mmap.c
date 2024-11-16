@@ -1179,7 +1179,7 @@ nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int nblocks, un
 	unsigned block_idx;
 	unsigned cur_page;
 
-        nvfs_dbg("setting for %d nblocks from page: %p and start offset :%u\n", nblocks, page, start_offset);
+        nvfs_dbg("setting metadata for %d nblocks from page: %p and start offset :%u\n", nblocks, page, start_offset);
 	nvfs_mgroup = __nvfs_mgroup_from_page(page, false);
 	if (!nvfs_mgroup)
 	       return NULL;

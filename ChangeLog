@@ -1,3 +1,6 @@
+nvidia-fs (2.23.1) RELEASE; urgency=low
+  * Use persistent_p2p APIs >= nvidia driver version 555
+  * Fix bug in copy_to_uer through batch API
 nvidia-fs (2.22.3) RELEASE; urgency=low
   * Switch to nvidia_p2p_get_pages_persistent() call for baremetal on x86
 nvidia-fs (2.20.5) RELEASE; urgency=low
