@@ -647,5 +647,8 @@ const struct file_operations nvfs_stats_fops = {
         .write          = nvfs_stats_clear,
         .llseek         = seq_lseek,
         .release        = single_release,
+#if defined(FOP_UNSIGNED_OFFSET)
+        .fop_flags      = FOP_UNSIGNED_OFFSET,
+#endif
 };
 #endif
