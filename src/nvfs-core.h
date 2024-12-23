@@ -79,6 +79,10 @@ extern int nvfs_peer_stats_enabled;
 
 typedef unsigned long long u64;
 
+#if !defined(fd_file) 
+#define fd_file(fd) fd.file
+#endif
+
 /*
  * IOCTL structures
  */

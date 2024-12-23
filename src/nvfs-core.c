@@ -921,7 +921,14 @@ static inline const char* opstr(int op)
 
 static inline bool unsigned_offsets(struct file *file)
 {
-        return file->f_mode & FMODE_UNSIGNED_OFFSET;
+        return
+#if defined(FOP_UNSIGNED_OFFSET)
+               file->f_op->fop_flags & FOP_UNSIGNED_OFFSET;
+#elif defined(FMODE_UNSIGNED_OFFSET)
+               file->f_mode & FMODE_UNSIGNED_OFFSET;
+#elif
+               false;
+#endif
 }
 
 int nvfs_rw_verify_area(int read_write, struct file *file,
@@ -1610,26 +1617,26 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 	}
 
 	fd = fdget(ioargs->fd);
-	if (!fd.file) {
+	if (!fd_file(fd)) {
 		nvfs_err("%s:%d invalid file descriptor:%d\n",
 				__func__, __LINE__, ioargs->fd);
 		return ERR_PTR(ret);
 	}
 
-	ret = nvfs_check_file_permissions(op, fd.file,
+	ret = nvfs_check_file_permissions(op, fd_file(fd),
                                        ioargs->allowreads);
 	if (ret) {
 		nvfs_err("Invalid file permissions\n");
 		goto fd_put;
 	}
 
-	inode = file_inode(fd.file);
+	inode = file_inode(fd_file(fd));
 	// we already have a valid fd
 	BUG_ON(inode == NULL);
 
 	if (file_args->inum) {
 		// for NFS majdev is zero
-		if (S_ISREG(file_inode(fd.file)->i_mode) &&
+		if (S_ISREG(file_inode(fd_file(fd))->i_mode) &&
 				file_args->majdev) {
                         #if 0
 			if (file_args->generation == 0) {
@@ -1642,7 +1649,7 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 				goto fd_put;
 			}
                         #endif
-		} else if ((S_ISBLK(file_inode(fd.file)->i_mode)) &&
+		} else if ((S_ISBLK(file_inode(fd_file(fd))->i_mode)) &&
 				(file_args->majdev == 0)) {
 			ret = -EINVAL;
 			nvfs_err("invalid file_args, no major number for block device file\n");
@@ -1718,7 +1725,7 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
         nvfsio->op  = op;
 
 #ifndef SIMULATE_INLINE_READS
-	if ((fd.file->f_flags & O_DIRECT) == 0) {
+	if ((fd_file(fd)->f_flags & O_DIRECT) == 0) {
 		nvfs_err("O_DIRECT flag is not set\n");
 		ret = -EINVAL;
                 goto mgroup_put;
@@ -1958,7 +1965,7 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 						struct nvfs_io_mgroup, nvfsio);
 	struct nvfs_gpu_args  *gpu_info = &nvfs_mgroup->gpu_info;
         ssize_t ret = 0, bytes_done = 0, bytes_left = nvfsio->length;
-        struct file *f = nvfsio->fd.file;
+        struct file *f = fd_file(nvfsio->fd);
         struct inode *inode = file_inode(f);
         loff_t fd_offset = nvfsio->fd_offset;
 	u64 va_offset = 0;
