@@ -161,7 +161,7 @@ unsigned int _lookup_index_entry(uint64_t pcidevinfo,
  *  @params  : pci device info of the gpu
  *  @returns : index
  */
-unsigned int nvfs_create_gpu_hash_entry(uint64_t pdevinfo)
+static unsigned int nvfs_create_gpu_hash_entry(uint64_t pdevinfo)
 {
 	if (!pdevinfo)
 		return UINT_MAX;
@@ -174,7 +174,7 @@ unsigned int nvfs_create_gpu_hash_entry(uint64_t pdevinfo)
  *  @params  : pci device info of the peer device
  *  @returns : index
  */
-unsigned int nvfs_create_peer_hash_entry(uint64_t pdevinfo)
+static unsigned int nvfs_create_peer_hash_entry(uint64_t pdevinfo)
 {
 	if (!pdevinfo)
 		return UINT_MAX;
@@ -206,7 +206,7 @@ uint64_t nvfs_lookup_gpu_hash_index_entry(unsigned int index)
  *  @params  : pci device info of peer device
  *  @returns : hash index
  */
-unsigned int nvfs_get_peer_hash_index(uint64_t pdevinfo)
+static unsigned int nvfs_get_peer_hash_index(uint64_t pdevinfo)
 {
 	return _lookup_index_entry(pdevinfo, peer_info_table, MAX_PEER_DEVS);
 }
@@ -729,7 +729,7 @@ void nvfs_update_peer_usage(unsigned int gpu_index, u64 peer_pdevinfo) {
  *  @params  : distance to match
  *  @returns : count
  */
-uint64_t nvfs_aggregate_peer_usage_by_distance(unsigned int gpu_index, unsigned int pci_dist) {
+static uint64_t nvfs_aggregate_peer_usage_by_distance(unsigned int gpu_index, unsigned int pci_dist) {
 	unsigned int i;
 	uint64_t count = 0;
 	if (unlikely(gpu_index >= MAX_GPU_DEVS)) {

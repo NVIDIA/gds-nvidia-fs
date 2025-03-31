@@ -38,7 +38,7 @@
 extern struct module_entry modules_list[];
 extern struct mutex nvfs_module_mutex;
 
-int nvfs_modules_show(struct seq_file *m, void *v)
+static int nvfs_modules_show(struct seq_file *m, void *v)
 {
 	int i;
 	struct module_entry *mod_entry;
