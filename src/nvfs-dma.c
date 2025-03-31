@@ -737,9 +737,9 @@ static int nvfs_dma_map_sg_attrs(struct device *device,
 	return nvfs_dma_map_sg_attrs_internal(device, sglist, nents, dma_dir, attrs, false);
 }
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
-int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
-				int nents,
-				struct nvfs_rdma_info *rdma_infop)
+static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
+					 int nents,
+					 struct nvfs_rdma_info *rdma_infop)
 {
 	struct scatterlist *sg = NULL;
 	struct page *page;

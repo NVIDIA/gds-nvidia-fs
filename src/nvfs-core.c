@@ -924,8 +924,9 @@ static inline bool unsigned_offsets(struct file *file)
         return file->f_mode & FMODE_UNSIGNED_OFFSET;
 }
 
-int nvfs_rw_verify_area(int read_write, struct file *file,
-		char __user *buf, const loff_t *ppos, size_t count)
+static int nvfs_rw_verify_area(int read_write, struct file *file,
+			       char __user *buf, const loff_t *ppos,
+			       size_t count)
 {
         struct inode *inode;
         loff_t pos;
