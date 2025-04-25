@@ -114,6 +114,24 @@ EOF
 cat > $TEST_C <<EOF
 
 
+#include "test.h"
+#include <linux/file.h>
+
+int test (void)
+{
+	struct fd fd1;
+	struct file* f = fd1.file;
+        return 0;
+}
+
+EOF
+if compile_prog "checking if struct fd has file parameter..."; then
+        output_sym "HAVE_STRUCT_FD_FILE_PARAM"
+fi
+
+cat > $TEST_C <<EOF
+
+
 #include <linux/uaccess.h>
 #include "test.h"
 
@@ -128,6 +146,9 @@ EOF
 if compile_prog "checking if uaccess.h access_ok has 3 parameters..."; then
         output_sym "HAVE_ACCESS_OK_3_PARAMS"
 fi
+
+cat > $TEST_C <<EOF
+
 
 cat > $TEST_C <<EOF
 #include <linux/uaccess.h>
