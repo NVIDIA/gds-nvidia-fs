@@ -27,6 +27,7 @@
 #include "nvfs-core.h"
 #include "nvfs-dma.h"
 #include "nvfs-mmap.h"
+#include "nvfs-rdma.h"
 
 
 int nvfs_set_rdma_reg_info_to_mgroup(

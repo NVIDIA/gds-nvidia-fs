@@ -1,10 +1,18 @@
+nvidia-fs (2.25.6) RELEASE; urgency=low
+  * fixes for upstream kernel build issues with 'struct fd'
+  * Add domain to key creation for hash table to cache the DMA entries
+  * provide support for NEC Scalable Technology File System (ScaTeFS)
+
 nvidia-fs (2.24.2) RELEASE; urgency=low
   * Provide support for more rdma devices
+
 nvidia-fs (2.23.1) RELEASE; urgency=low
   * Use persistent_p2p APIs >= nvidia driver version 555
   * Fix bug in copy_to_uer through batch API
+
 nvidia-fs (2.22.3) RELEASE; urgency=low
   * Switch to nvidia_p2p_get_pages_persistent() call for baremetal on x86
+
 nvidia-fs (2.20.5) RELEASE; urgency=low
   * Memset sglist beyond blk_rq_nr_phys_segments to avoid memory corruption
 

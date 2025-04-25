@@ -164,6 +164,18 @@ struct module_entry modules_list[] = {
 		0,
 		&nvfs_dev_dma_rw_ops
 	},
+	
+	{
+		1,
+		0,
+		NVFS_PROC_MOD_SCATEFS_KEY,
+		0,
+		"scatefs_register_nvfs_dma_ops",
+		0,
+		"scatefs_unregister_nvfs_dma_ops",
+		0,
+		&nvfs_dev_dma_rw_ops
+	},
 
 	{
 		0,
@@ -737,7 +749,7 @@ static int nvfs_dma_map_sg_attrs(struct device *device,
 	return nvfs_dma_map_sg_attrs_internal(device, sglist, nents, dma_dir, attrs, false);
 }
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
-int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
+static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 				int nents,
 				struct nvfs_rdma_info *rdma_infop)
 {

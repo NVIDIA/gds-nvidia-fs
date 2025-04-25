@@ -44,12 +44,18 @@
 
 #include <linux/list.h>
 
+#ifndef MAX
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#endif
+
+#ifndef MIN
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#endif
 
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
-#define NVFS_GET_PCI_DEVID(pci_dev) PCI_DEVID(pci_dev->bus->number, pci_dev->devfn)
+#define NVFS_GET_PCI_DEVID(pci_dev) (((u32)pci_domain_nr(pci_dev->bus) << 16) | \
+				     (PCI_DEVID(pci_dev->bus->number, pci_dev->devfn)))
 
 #define nvfs_msg(KRNLVL, FMT, ARGS...) printk(KRNLVL DEVICE_NAME ":" FMT, ## ARGS)
 //#define nvfs_msg(KRNLVL, FMT, ARGS...) printk_ratelimited(KRNLVL DEVNAME ":" FMT, ## ARGS)
@@ -243,7 +249,7 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 // File-system magics which are not part of linux/magic.h
 #define LUSTRE_SUPER_MAGIC 0x0bd00bd0U
 #define BEEGFS_SUPER_MAGIC  0x19830326U
-
+#define SCATEFS_SUPER_MAGIC 0x53544653
 #define NVFS_MAY_SLEEP()                  (!irqs_disabled() && !in_interrupt() && !in_atomic() && !in_nmi())
 
 static inline unsigned int get_major(struct inode *inode) {
