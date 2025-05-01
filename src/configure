@@ -150,7 +150,6 @@ fi
 cat > $TEST_C <<EOF
 
 
-cat > $TEST_C <<EOF
 #include <linux/uaccess.h>
 #include "test.h"
 
