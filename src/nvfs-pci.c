@@ -228,7 +228,7 @@ uint64_t nvfs_lookup_peer_hash_index_entry(unsigned int index)
  */
 static bool nvfs_pcie_acs_enabled(struct pci_dev *pdev) {
 	int pos;
-	u16 cap, ctrl;
+	u16 cap = 0, ctrl = 0;
 
 	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_ACS);
 	if (!pos)
@@ -262,7 +262,7 @@ static u32 nvfs_pcie_bw_available(struct pci_dev *pdev,
                                   enum pcie_link_width *width) {
     u32 bw;
     int ret;
-    u16 lnksta;
+    u16 lnksta = 0;
     u8 lnk_speed_idx;
 	enum pci_bus_speed lnk_speed;
 	enum pcie_link_width lnk_width;

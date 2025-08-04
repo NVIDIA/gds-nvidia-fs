@@ -591,7 +591,6 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 			}
 			// We do not handle dma mapping for CPU pages
 			nr_cpu_dma++;
-			continue;
                 } else {
 			// Cannot handle GPU/CPU pages
 			if (unlikely(nr_cpu_dma)) {

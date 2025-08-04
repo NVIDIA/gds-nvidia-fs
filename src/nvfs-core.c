@@ -1035,22 +1035,29 @@ nvfs_direct_io(int op, struct file *filp, char __user *buf,
 
         iov_iter_init(&iter, op, &iov, 1, len);
 
-//TODO: If the config is not present fallback to vfs_read/vfs_write
-#ifdef HAVE_CALL_READ_WRITE_ITER
         if(op == WRITE) {
                 set_write_flag(&nvfsio->common);
                 file_start_write(filp);
 
+#ifdef HAVE_CALL_READ_WRITE_ITER
                 ret = nvfs_io_ret(&nvfsio->common,
 				call_write_iter(filp, &nvfsio->common, &iter));
+#else
+		ret = nvfs_io_ret(&nvfsio->common,
+                                filp->f_op->write_iter(&nvfsio->common, &iter));
+#endif
                 if (S_ISREG(file_inode(filp)->i_mode))
                         __sb_writers_release(file_inode(filp)->i_sb,
 				SB_FREEZE_WRITE);
         } else {
+#ifdef HAVE_CALL_READ_WRITE_ITER
                 ret = nvfs_io_ret(&nvfsio->common,
 				call_read_iter(filp, &nvfsio->common, &iter));
-        }
+#else
+		ret = nvfs_io_ret(&nvfsio->common,
+                                filp->f_op->read_iter(&nvfsio->common, &iter));
 #endif
+        }
 
         nvfs_dbg("nvfs_direct_io : ret = %ld len = %lu\n" , ret, len);
         if (ret == -EIOCBQUEUED) {
@@ -1273,7 +1280,7 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
         }
 
         if(gpu_buf_len < GPU_PAGE_SIZE &&
-		(input_param->sbuf_block * NVFS_BLOCK_SIZE) <
+		(input_param->sbuf_block * (unsigned long long)NVFS_BLOCK_SIZE) <
 		(gpuvaddr - gpu_virt_start + gpu_buf_len))
         {
 		nvfs_err("invalid shadow buf size provided %u, gpu_buf_len: %lld, gpuvaddr: %llx \n",
@@ -1504,7 +1511,7 @@ static int nvfs_map(nvfs_ioctl_map_t *input_param)
 	nvfs_get_ops();
 
         nvfs_mgroup = nvfs_mgroup_pin_shadow_pages(input_param->cpuvaddr,
-				input_param->sbuf_block * NVFS_BLOCK_SIZE);
+				input_param->sbuf_block * (unsigned long long)NVFS_BLOCK_SIZE);
 	if (!nvfs_mgroup) {
 		nvfs_err("%s:%d Error nvfs_setup_shadow_buffer\n",
 				__func__, __LINE__);
@@ -2462,7 +2469,7 @@ static int get_nvidia_driver_version(void){
 	char buf[NVIDIA_DRIVER_BUF_SIZE];
 	loff_t pos = 0;
 	ssize_t bytes_read;
-	int value;
+	int value = -1;
 
 	file = filp_open(NVIDIA_DRIVER_PATH, O_RDONLY, 0);
 	if (IS_ERR(file)) {

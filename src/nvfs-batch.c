@@ -162,18 +162,16 @@ long nvfs_io_batch_submit(nvfs_batch_io_t *nvfs_batch)
 				 nvfs_batch->start_io),
 			 &nvfs_batch_submit_latency_per_sec);
 	 kfree(nvfs_batch);
-         return ret;;
+         return ret;
 
 cleanup:
-        if (nvfs_batch) {
-                for (i = 0; i < nvfs_batch->nents; i++) {
-                        if (nvfs_batch->nvfsio[i] && !IS_ERR(nvfs_batch->nvfsio[i]))
-                                nvfs_io_free(nvfs_batch->nvfsio[i], -EINVAL);
-                }
-                //XXX: wait for the ongoing ops, or cancel them.
-                kfree(nvfs_batch);
-        }
-        return ret;;
+	for (i = 0; i < nvfs_batch->nents; i++) {
+		if (nvfs_batch->nvfsio[i] && !IS_ERR(nvfs_batch->nvfsio[i]))
+			nvfs_io_free(nvfs_batch->nvfsio[i], -EINVAL);
+	}
+	//XXX: wait for the ongoing ops, or cancel them.
+	kfree(nvfs_batch);
+        return ret;
 
 }
 #endif
