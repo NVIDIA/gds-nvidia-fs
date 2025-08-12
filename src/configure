@@ -149,7 +149,6 @@ fi
 
 cat > $TEST_C <<EOF
 
-
 #include <linux/uaccess.h>
 #include "test.h"
 
@@ -533,6 +532,21 @@ EOF
 if compile_prog "Checking if vma_flags are modifiable directly ..."; then
         output_sym "NVFS_VM_FLAGS_NOT_CONSTANT"
 fi
+
+cat > $TEST_C <<EOF
+#include <linux/blk-mq-pci.h>
+#include "test.h"
+
+int test (void)
+{
+        return 0;
+}
+
+EOF
+if compile_prog "Checking if blk-mq-pci.h is present..."; then
+        output_sym "HAVE_BLK_MQ_PCI_H"
+fi
+
 
 echo "#endif" >> $config_host_h
 rm -rf build

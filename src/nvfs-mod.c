@@ -135,11 +135,6 @@ void cleanup_module_list(void) {
 #ifdef HAVE_MODULE_MUTEX
 			mutex_unlock(&module_mutex);
 #endif
-
-			// initialized at compile time
-			if (!mod_entry->is_mod)
-				continue;
-
 		}
 	}
 }

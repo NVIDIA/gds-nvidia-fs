@@ -26,7 +26,9 @@
 #include <linux/types.h>
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
+#ifdef HAVE_BLK_MQ_PCI_H
 #include <linux/blk-mq-pci.h>
+#endif
 #include <linux/scatterlist.h>
 #include <linux/version.h>
 

@@ -173,7 +173,6 @@ static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
         nvfs_dbg("freeing base_index %lx(ref:%d) found \n",
                   nvfs_mgroup->base_index, atomic_read(&nvfs_mgroup->ref));
         kfree(nvfs_mgroup);
-	nvfs_mgroup = NULL;
 }
 
 
@@ -225,7 +224,7 @@ void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup) {
 
 static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
 {
-	struct page *page;
+	struct page *page = NULL;
 	int ret;
 	unsigned long cur_base_index  = 0;
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
@@ -371,12 +370,12 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 	count = DIV_ROUND_UP(length, PAGE_SIZE);
 	block_count = DIV_ROUND_UP(length, NVFS_BLOCK_SIZE);
 	pages = (struct page **) kmalloc(count * sizeof(struct page *), GFP_KERNEL);
-
 	if (!pages) {
 		nvfs_err("%s:%d shadow buffer pages allocation failed\n",
 				__func__, __LINE__);
 		goto out;
 	}
+	memset(pages, 0, count * sizeof(struct page *));
 
 #ifdef CONFIG_FAULT_INJECTION
         if (nvfs_fault_trigger(&nvfs_pin_shadow_pages_error)) {
@@ -625,7 +624,7 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
         nvfs_mgroup_ptr_t nvfs_mgroup, nvfs_new_mgroup;
 	struct nvfs_gpu_args *gpu_info;
 	int os_pages_count;
-	vm_flags_t vm_flags;
+	vm_flags_t vm_flags, vm_flags_to_set;
 
 	nvfs_stat64(&nvfs_n_mmap);
         /* check length - do not allow larger mappings than the number of
@@ -668,11 +667,13 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
                goto error;
         }
 
+ 
+	vm_flags_to_set = VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY;
         /* dont allow mremap to expand and dont allow copy on fork */
 #ifdef NVFS_VM_FLAGS_NOT_CONSTANT
-        vma->vm_flags |= VM_IO | VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY;
+        vma->vm_flags |= vm_flags_to_set;
 #else
-        vm_flags_set(vma, VM_IO | VM_MIXEDMAP | VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY);
+        vm_flags_set(vma, vm_flags_to_set);
 #endif
         vma->vm_ops = &nvfs_mmap_ops;
         nvfs_new_mgroup = (nvfs_mgroup_ptr_t)kzalloc(sizeof(struct nvfs_io_mgroup), GFP_KERNEL);
@@ -697,7 +698,6 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 		nvfs_mgroup = nvfs_mgroup_get_unlocked(base_index);
                 if (unlikely(nvfs_mgroup && tries--)) {
                         nvfs_mgroup_put(nvfs_mgroup);
-                        continue;
                 } else {
                         nvfs_new_mgroup->base_index = base_index;
                         atomic_set(&nvfs_new_mgroup->ref,1);
@@ -744,7 +744,6 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
                 BUG_ON(vma->vm_private_data != NULL);
         }
 
-	j = 0;
         for (i = 0; i < nvfs_blocks_count; i++) {
 		j = i / nvfs_block_count_per_page;
 		if (nvfs_mgroup->nvfs_ppages[j] == NULL) {
@@ -1051,7 +1050,7 @@ int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_blocks)
                 nvfs_mgroup_fill_mpage(nvfs_mgroup->nvfs_ppages[j/nvfs_block_count_per_page],
 			&nvfs_mgroup->nvfs_metadata[j], nvfsio);
         }
-        nvfsio->nvfs_active_blocks_end = j-1;
+        nvfsio->nvfs_active_blocks_end = (j > 0 ? j-1 : 0);
 
         // clear the state for unqueued pages
         for (; j < nvfs_mgroup->nvfs_blocks_count ; j++) {
