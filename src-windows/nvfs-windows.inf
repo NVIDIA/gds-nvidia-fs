@@ -1,0 +1,88 @@
+;
+; nvfs-windows.inf
+; NVIDIA GDS (GPUDirect Storage) Windows Kernel Driver Installation
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+CatalogFile=nvfs-windows.cat
+DriverVer=01/15/2025,1.15.0.42
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+nvfs_Device_CoInstaller_CopyFiles = 11
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=SampleClassReg
+
+[SampleClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+nvfs.sys  = 1,,
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with SourceDisksNames
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%nvfs.DeviceDesc%=nvfs_Device, Root\nvfs
+
+[nvfs_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+nvfs.sys
+
+;-------------- Service installation
+[nvfs_Device.NT.Services]
+AddService = nvfs,%SPSVCINST_ASSOCSERVICE%, nvfs_Service_Inst
+
+; -------------- nvfs driver install sections
+[nvfs_Service_Inst]
+DisplayName    = %nvfs.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\nvfs.sys
+
+;
+;--- nvfs_Device Coinstaller installation ------
+;
+
+[nvfs_Device.NT.CoInstallers]
+AddReg=nvfs_Device_CoInstaller_AddReg
+CopyFiles=nvfs_Device_CoInstaller_CopyFiles
+
+[nvfs_Device_CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll,WdfCoInstaller"
+
+[nvfs_Device_CoInstaller_CopyFiles]
+WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll
+
+[nvfs_Device.NT.Wdf]
+KmdfService =  nvfs, nvfs_wdfsect
+[nvfs_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="NVIDIA Corporation"
+ClassName="System Devices"
+DiskName = "NVIDIA GDS Installation Disk"
+nvfs.DeviceDesc = "NVIDIA GPUDirect Storage Driver"
+nvfs.SVCDESC = "NVIDIA GPUDirect Storage Service"
