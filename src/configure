@@ -547,6 +547,22 @@ if compile_prog "Checking if blk-mq-pci.h is present..."; then
         output_sym "HAVE_BLK_MQ_PCI_H"
 fi
 
+cat > $TEST_C <<EOF
+#include <linux/mm_types.h>
+#include "test.h"
+
+int test (void)
+{
+	struct page test_page;
+	test_page.__folio_index = 0;
+        return 0;
+}
+
+EOF
+if compile_prog "Checking if page.__folio_index is present..."; then
+        output_sym "HAVE_PAGE_FOLIO_INDEX"
+fi
+
 
 echo "#endif" >> $config_host_h
 rm -rf build

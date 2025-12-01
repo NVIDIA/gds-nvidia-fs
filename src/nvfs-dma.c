@@ -781,7 +781,7 @@ static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	}
 	
 #ifdef NVFS_TEST_GPFS_CALLBACK
-	prev_mgroup = nvfs_mgroup_get((page->index >> NVFS_MAX_SHADOW_PAGES_ORDER));
+	prev_mgroup = nvfs_mgroup_get((NVFS_PAGE_INDEX(page->index) >> NVFS_MAX_SHADOW_PAGES_ORDER));
 #else
 	prev_mgroup = nvfs_mgroup_from_page(page);
 #endif
@@ -846,7 +846,7 @@ static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 
 	//	printk("%s: page %p \n", __func__, page);
 #ifdef NVFS_TEST_GPFS_CALLBACK
-		nvfs_mgroup = nvfs_mgroup_get((page->index >> NVFS_MAX_SHADOW_PAGES_ORDER));
+		nvfs_mgroup = nvfs_mgroup_get((NVFS_PAGE_INDEX(page->index) >> NVFS_MAX_SHADOW_PAGES_ORDER));
 #else
 		nvfs_mgroup = nvfs_mgroup_from_page_range(page, nblocks, sg->offset);
 #endif

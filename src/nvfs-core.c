@@ -607,7 +607,7 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
         }
         nvfs_dbg("Found GPU Mapping for page index %lx, %lx "
 		 "gpu_page_index %lu/%u page_offset %lx\n",
-                  page->index,
+                  NVFS_PAGE_INDEX(page),
 		  (unsigned long)nvfsio, gpu_page_index,
 		  (dma_mapping->entries - 1),
 		  (unsigned long)pgoff);
