@@ -1,3 +1,5 @@
+nvidia-fs (2.27.3) RELEASE; urgency=low
+  * No changes
 nvidia-fs (2.26.6) RELEASE; urgency=low
   * Fix issues for 6.11 kernel
   * Fix compilation issues for 6.14 kernel
