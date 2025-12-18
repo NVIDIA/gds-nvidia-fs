@@ -26,7 +26,14 @@
 #include <linux/rculist.h>
 #include <linux/device.h>
 #include <linux/log2.h>
+#include "config-host.h"
 #include "nv-p2p.h"
+
+#ifdef HAVE_PAGE_FOLIO_INDEX
+#define NVFS_PAGE_INDEX(page)   page->__folio_index
+#else
+#define NVFS_PAGE_INDEX(page)   page->index
+#endif
 
 #define KiB4			(4096)
 #define NVFS_BLOCK_SIZE		(4096)
