@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+    name="nvfs-windows"
+    version="1.15.0.42"
+    type="win32"
+    processorArchitecture="amd64" />
+  
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and later -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+  
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        type="win32"
+        processorArchitecture="amd64"
+        publicKeyToken="6595b64144ccf1df"
+        language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>

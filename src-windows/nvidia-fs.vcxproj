@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Windows Solution File for NVIDIA GDS Driver -->
+<Project ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Configuration">
+    <WindowsTargetPlatformVersion>10.0.22000.0</WindowsTargetPlatformVersion>
+    <DriverType>KMDF</DriverType>
+    <DriverVersion>1.15</DriverVersion>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{12345678-1234-5678-9012-123456789012}</ProjectGuid>
+    <RootNamespace>nvidia_fs</RootNamespace>
+    <WindowsSDKVersion>10.0.22000.0</WindowsSDKVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>KMDF</DriverType>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>KMDF</DriverType>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>nvidia-fs</TargetName>
+    <TargetExt>.sys</TargetExt>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_WIN64;_DEBUG;KMDF_VERSION=1;15;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(DDK_INC_PATH);$(NVIDIA_SDK_PATH)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\kernel32.lib;$(DDK_LIB_PATH)\hal.lib;wdm.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Native</SubSystem>
+      <EntryPointSymbol>DriverEntry</EntryPointSymbol>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_WIN64;NDEBUG;KMDF_VERSION=1;15;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(DDK_INC_PATH);$(NVIDIA_SDK_PATH)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\kernel32.lib;$(DDK_LIB_PATH)\hal.lib;wdm.lib;ntstrsafe.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Native</SubSystem>
+      <EntryPointSymbol>DriverEntry</EntryPointSymbol>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <!-- Core Driver Files -->
+    <ClCompile Include="nvfs-core-win.c" />
+    
+    <!-- Memory Management -->
+    <ClCompile Include="nvfs-mmap-win.c" />
+    
+    <!-- DMA Engine -->
+    <ClCompile Include="nvfs-dma-win.c" />
+    
+    <!-- PCI Management -->
+    <ClCompile Include="nvfs-pci-win.c" />
+    
+    <!-- Statistics and Registry -->
+    <ClCompile Include="nvfs-registry-win.c" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Header Files -->
+    <ClInclude Include="nvfs-core-win.h" />
+    <ClInclude Include="nvfs-mmap-win.h" />
+    <ClInclude Include="nvfs-dma-win.h" />
+    <ClInclude Include="nvfs-pci-win.h" />
+    <ClInclude Include="nvfs-registry-win.h" />
+    <ClInclude Include="nvfs-stat-win.h" />
+    <ClInclude Include="nvfs-kernel-interface-win.h" />
+    <ClInclude Include="config-host-win.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Windows-specific files -->
+    <None Include="nvidia-fs.inf" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <Target Name="PostBuild" AfterTargets="Build">
+    <Message Text="Building driver installation package..." />
+    <Exec Command="stampinf -f nvidia-fs.inf -d * -v *" />
+    <Exec Command="inf2cat /driver:. /os:10_X64" />
+  </Target>
+</Project>
