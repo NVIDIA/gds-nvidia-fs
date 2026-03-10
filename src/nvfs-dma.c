@@ -54,6 +54,9 @@ struct nvfs_dma_rw_ops nvfs_nvme_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_sfxv_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops;
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+struct nvfs_dma_rw_blk_iter_ops nvfs_nvme_dma_rw_blk_iter_ops;
+#endif
 // nvfs symbol table
 struct module_entry modules_list[] = {
 	{
@@ -61,11 +64,23 @@ struct module_entry modules_list[] = {
 		0,
 		NVFS_PROC_MOD_NVME_KEY,
 		0,
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+		"nvme_v2_register_nvfs_dma_ops",
+#else
 		"nvme_v1_register_nvfs_dma_ops",
+#endif
 		0,
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+		"nvme_v2_unregister_nvfs_dma_ops",
+#else
 		"nvme_v1_unregister_nvfs_dma_ops",
+#endif
 		0,
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+		&nvfs_nvme_dma_rw_blk_iter_ops
+#else
 		&nvfs_nvme_dma_rw_ops
+#endif
 	},
 
 	{
@@ -512,6 +527,718 @@ static int nvfs_nvme_blk_rq_map_sg(struct request_queue *q,
 	return nvfs_blk_rq_map_sg_internal(q, req, iod_sglist, true);
 }
 
+// V2 ops implementations for kernels with iterator API
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+
+/*
+ * nvfs_peek_next_bvec - Peek at the next bio_vec without advancing iterator
+ * @req: The block request
+ * @req_iter: Request iterator tracking current position
+ * @bvec: Output bio_vec
+ *
+ * This peeks at the current bio_vec WITHOUT advancing the iterator.
+ * The caller must call nvfs_advance_bvec() to actually consume it.
+ *
+ * Returns: true if got a bio_vec, false if no more bio_vecs
+ */
+static bool nvfs_peek_next_bvec(struct request *req, struct req_iterator *req_iter,
+                                struct bio_vec *bvec)
+{
+	/* If no more data in current bio, we're done */
+	if (!req_iter->iter.bi_size) {
+		nvfs_dbg("%s: no more data in current bio (bi_size=0)\n", __func__);
+		return false;
+	}
+
+	/* Get current bio_vec WITHOUT advancing */
+	*bvec = mp_bvec_iter_bvec(req_iter->bio->bi_io_vec, req_iter->iter);
+	nvfs_dbg("%s: peeked bvec page=%p len=%u offset=%u\n",
+		__func__, bvec->bv_page, bvec->bv_len, bvec->bv_offset);
+	return true;
+}
+
+/*
+ * nvfs_advance_bvec - Advance the iterator past current bio_vec
+ * @req_iter: Request iterator tracking current position
+ * @bvec: The bio_vec to advance past
+ *
+ * This advances the iterator by the length of the given bio_vec.
+ * Should be called after nvfs_peek_next_bvec() to consume the bio_vec.
+ */
+static void nvfs_advance_bvec(struct req_iterator *req_iter, struct bio_vec *bvec)
+{
+	nvfs_dbg("%s: advancing by %u bytes\n", __func__, bvec->bv_len);
+	bio_advance_iter_single(req_iter->bio, &req_iter->iter, bvec->bv_len);
+}
+
+/*
+ * nvfs_validate_gpu_request - Validate GPU request on first call
+ * @req: The block request
+ * @nvfs_mgroup: GPU memory group
+ *
+ * Returns: 0 on success, NVFS_IO_ERR on validation failure
+ */
+static int nvfs_validate_gpu_request(struct request *req, nvfs_mgroup_ptr_t nvfs_mgroup)
+{
+	if (unlikely(blk_integrity_rq(req))) {
+		nvfs_err("%s:%d cannot handle gpu request with integrity metadata\n",
+				__func__, __LINE__);
+		return NVFS_IO_ERR;
+	}
+
+	if (unlikely(!nvfs_req_payload_supported(req))) {
+		nvfs_err("%s:%d payload too large\n", __func__, __LINE__);
+		return NVFS_IO_ERR;
+	}
+
+#ifdef HAVE_DMA_DRAIN_IN_REQUEST_QUEUE
+	{
+		struct request_queue *q = req->q;
+		if (unlikely(q->dma_drain_size && q->dma_drain_needed(req))) {
+			nvfs_err("%s:%d cannot handle blk queue with drain segments\n",
+					__func__, __LINE__);
+			return NVFS_IO_ERR;
+		}
+	}
+#endif
+
+	return 0;
+}
+
+/*
+ * nvfs_check_page_coalescible - Check if a page can be coalesced with current segment
+ * @prev_phys_addr: Previous GPU physical address
+ * @curr_phys_addr: Current GPU physical address
+ * @gpu_page_index: Current GPU page index
+ * @segment_len: Current segment length
+ * @bvec_len: Length of bio_vec to add (unused, kept for API consistency)
+ *
+ * In the 6.17+ iterator-based approach, we let the NVMe driver decide when to stop
+ * calling us. We only check GPU-specific constraints: physical contiguity and 4GB boundary.
+ *
+ * Returns: true if page can be coalesced, false otherwise
+ */
+static bool nvfs_check_page_coalescible(uint64_t prev_phys_addr, uint64_t curr_phys_addr,
+                                         unsigned long gpu_page_index,
+                                         unsigned int segment_len, unsigned int bvec_len)
+{
+	/* Check physical contiguity */
+	if((prev_phys_addr + segment_len) != curr_phys_addr)
+		return false;
+	/* Check 4GB boundary (SMMU IOVA limitation) */
+	if ((gpu_page_index != 0) && (gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES == 0))
+		return false;
+
+	return true;
+}
+
+/*
+ * nvfs_get_gpu_page_info - Get GPU page physical address without DMA mapping
+ * @bvec: bio_vec containing the page
+ * @phys_addr: Output GPU physical address
+ * @gpu_page_index: Output GPU page index
+ *
+ * Gets the GPU physical address and page index for contiguity checking.
+ * Does NOT perform DMA mapping - that's done once per segment.
+ *
+ * Note: When bv_offset >= PAGE_SIZE, we must calculate the actual page
+ * using nvfs_mgroup->nvfs_ppages[] since shadow buffer pages are not
+ * guaranteed to be contiguous struct page pointers.
+ *
+ * Returns: 0 on success, NVFS_BAD_REQ if CPU page, NVFS_IO_ERR on error
+ */
+static int nvfs_get_gpu_page_info(struct bio_vec *bvec, uint64_t *phys_addr,
+                                  unsigned long *gpu_page_index)
+{
+	nvfs_mgroup_ptr_t nvfs_mgroup;
+	pgoff_t pgoff;
+	unsigned int page_skip = bvec->bv_offset / PAGE_SIZE;
+	struct page *actual_page;
+
+	nvfs_dbg("%s: getting GPU page info for page=%p bv_offset=%u\n",
+		__func__, bvec->bv_page, bvec->bv_offset);
+
+	nvfs_mgroup = nvfs_mgroup_from_page(bvec->bv_page);
+	if (unlikely(IS_ERR(nvfs_mgroup))) {
+		nvfs_err("%s:%d mgroup_get_page error for page=%p\n", 
+			__func__, __LINE__, bvec->bv_page);
+		return NVFS_IO_ERR;
+	}
+
+	if (nvfs_mgroup == NULL) {
+		/* CPU page */
+		nvfs_dbg("%s: CPU page detected, page=%p\n", __func__, bvec->bv_page);
+		return NVFS_BAD_REQ;
+	}
+
+	/*
+	 * Calculate actual page based on bv_offset.
+	 * When bv_offset >= PAGE_SIZE, data starts in a different shadow buffer page.
+	 */
+	if (page_skip > 0) {
+		unsigned long rel_page_index = NVFS_PAGE_INDEX(bvec->bv_page) % NVFS_MAX_SHADOW_PAGES;
+		unsigned long target_page_index = rel_page_index + page_skip;
+
+		/* Bounds check */
+		if (target_page_index >= NVFS_MAX_SHADOW_PAGES ||
+		    target_page_index >= (nvfs_mgroup->nvfs_blocks_count /
+		                          (PAGE_SIZE / NVFS_BLOCK_SIZE))) {
+			nvfs_err("%s:%d page index out of bounds: target=%lu\n",
+				__func__, __LINE__, target_page_index);
+			CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+			return NVFS_IO_ERR;
+		}
+
+		actual_page = nvfs_mgroup->nvfs_ppages[target_page_index];
+		nvfs_dbg("%s: bv_offset=%u spans pages: rel_idx=%lu target_idx=%lu "
+			  "orig_page=%p actual_page=%p\n",
+			  __func__, bvec->bv_offset, rel_page_index, target_page_index,
+			  bvec->bv_page, actual_page);
+	} else {
+		actual_page = bvec->bv_page;
+	}
+
+	/* Get GPU physical address for tracking contiguity - use actual_page */
+	*phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, actual_page);
+	nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page, gpu_page_index, &pgoff);
+	CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+
+	nvfs_dbg("%s: GPU page phys_addr=0x%llx gpu_page_index=%lu pgoff=%lu\n",
+		__func__, *phys_addr, *gpu_page_index, pgoff);
+
+	return 0;
+}
+
+/*
+ * nvfs_check_bvec_contiguity - Check physical contiguity of pages within a bvec
+ * @nvfs_mgroup: The mgroup containing the shadow buffer pages
+ * @bvec: bio_vec to check
+ * @base_phys_addr: Physical address of the starting page
+ * @contiguous_len: Output - the contiguous length from start (may be < bv_len)
+ *
+ * When a bvec spans multiple pages (bv_len > PAGE_SIZE - offset_in_page),
+ * we must verify that all those pages are physically contiguous in GPU memory.
+ * Shadow buffer pages are allocated individually and may not be contiguous.
+ *
+ * Returns: true if fully contiguous, false if truncated (contiguous_len < bv_len)
+ */
+static bool nvfs_check_bvec_contiguity(nvfs_mgroup_ptr_t nvfs_mgroup,
+                                       struct bio_vec *bvec,
+                                       uint64_t base_phys_addr,
+                                       unsigned int *contiguous_len)
+{
+	unsigned int page_skip = bvec->bv_offset / PAGE_SIZE;
+	unsigned int offset_in_page = bvec->bv_offset % PAGE_SIZE;
+	unsigned long base_rel_index = NVFS_PAGE_INDEX(bvec->bv_page) % NVFS_MAX_SHADOW_PAGES;
+	unsigned long start_page_index = base_rel_index + page_skip;
+	unsigned int bytes_in_first_page = PAGE_SIZE - offset_in_page;
+	unsigned int remaining_len;
+	unsigned int checked_len;
+	uint64_t prev_phys_addr = base_phys_addr;
+	uint64_t curr_phys_addr;
+	unsigned long curr_page_index;
+	struct page *curr_page;
+
+	/* If bvec fits entirely within first page, it's contiguous by definition */
+	if (bvec->bv_len <= bytes_in_first_page) {
+		*contiguous_len = bvec->bv_len;
+		return true;
+	}
+
+	/* Start with first page */
+	checked_len = bytes_in_first_page;
+	remaining_len = bvec->bv_len - bytes_in_first_page;
+	curr_page_index = start_page_index + 1;
+
+	nvfs_dbg("%s: checking contiguity for bvec len=%u offset=%u, spans %lu+ pages\n",
+		__func__, bvec->bv_len, bvec->bv_offset,
+		(bvec->bv_len + offset_in_page + PAGE_SIZE - 1) / PAGE_SIZE);
+
+	/* Check each subsequent page for physical contiguity */
+	while (remaining_len > 0) {
+		/* Bounds check */
+		if (curr_page_index >= NVFS_MAX_SHADOW_PAGES ||
+		    curr_page_index >= (nvfs_mgroup->nvfs_blocks_count /
+		                        (PAGE_SIZE / NVFS_BLOCK_SIZE))) {
+			nvfs_err("%s: page index %lu out of bounds during contiguity check\n",
+				__func__, curr_page_index);
+			*contiguous_len = checked_len;
+			return false;
+		}
+
+		curr_page = nvfs_mgroup->nvfs_ppages[curr_page_index];
+		curr_phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, curr_page);
+
+		/* Check if this page is physically contiguous with previous */
+		if (curr_phys_addr != prev_phys_addr + PAGE_SIZE) {
+			nvfs_dbg("%s: discontinuity at page_index=%lu: prev_phys=0x%llx "
+				  "curr_phys=0x%llx (expected 0x%llx), truncating to %u bytes\n",
+				  __func__, curr_page_index, prev_phys_addr, curr_phys_addr,
+				  prev_phys_addr + PAGE_SIZE, checked_len);
+			*contiguous_len = checked_len;
+			return false;
+		}
+
+		/* This page is contiguous, add it */
+		if (remaining_len >= PAGE_SIZE) {
+			checked_len += PAGE_SIZE;
+			remaining_len -= PAGE_SIZE;
+		} else {
+			checked_len += remaining_len;
+			remaining_len = 0;
+		}
+
+		prev_phys_addr = curr_phys_addr;
+		curr_page_index++;
+	}
+
+	*contiguous_len = bvec->bv_len;
+	nvfs_dbg("%s: bvec is fully contiguous, len=%u\n", __func__, *contiguous_len);
+	return true;
+}
+
+/*
+ * nvfs_coalesce_gpu_pages - Try to coalesce contiguous GPU pages into segment
+ * @req: The block request
+ * @req_iter: Request iterator
+ * @segment_len: Current segment length (updated)
+ * @prev_phys_addr: Previous physical address (updated)
+ * @prev_gpu_page_index: Previous GPU page index (updated)
+ *
+ * Tries to coalesce as many contiguous GPU pages as possible into the current segment
+ * based on GPU physical address contiguity. Does NOT perform DMA mapping - that's done
+ * once for the entire segment on the base page.
+ */
+static void nvfs_coalesce_gpu_pages(struct request *req,
+                                    struct req_iterator *req_iter,
+                                    unsigned int *segment_len,
+                                    uint64_t *prev_phys_addr,
+                                    unsigned long *prev_gpu_page_index)
+{
+	struct bio_vec bvec;
+	uint64_t curr_phys_addr;
+	unsigned long gpu_page_index;
+	nvfs_mgroup_ptr_t nvfs_mgroup;
+	int ret;
+	int coalesced_count = 0;
+
+	nvfs_dbg("%s: starting coalescing, initial segment_len=%u\n", __func__, *segment_len);
+
+	/*
+	 * Try to coalesce following contiguous pages into this segment.
+	 * Like the kernel's blk_map_iter_next(), we handle bio chain advancement here.
+	 */
+	while (true) {
+		/* Check if current bio is exhausted, advance to next bio if needed */
+		if (!req_iter->iter.bi_size) {
+			if (!req_iter->bio->bi_next) {
+				nvfs_dbg("%s: no more bios in chain\n", __func__);
+				break;  /* No more bios */
+			}
+			
+			nvfs_dbg("%s: advancing to next bio in chain\n", __func__);
+			req_iter->bio = req_iter->bio->bi_next;
+			req_iter->iter = req_iter->bio->bi_iter;
+		}
+		
+		/* Peek at next bio_vec WITHOUT advancing */
+		if (!nvfs_peek_next_bvec(req, req_iter, &bvec)) {
+			nvfs_dbg("%s: peek failed, stopping coalescing\n", __func__);
+			break;  /* No more data */
+		}
+		
+		/* Get GPU page info (physical address) for contiguity checking */
+		ret = nvfs_get_gpu_page_info(&bvec, &curr_phys_addr, &gpu_page_index);
+		if (ret != 0) {
+			nvfs_dbg("%s: get_gpu_page_info returned %d, stopping coalescing\n",
+				__func__, ret);
+			break;  /* Hit CPU page or error, don't advance */
+		}
+
+		/* Check if we can coalesce this page based on physical address */
+		if (!nvfs_check_page_coalescible(*prev_phys_addr, curr_phys_addr,
+		                                  gpu_page_index, *segment_len, bvec.bv_len)) {
+			nvfs_dbg("%s: cannot coalesce - prev=0x%llx curr=0x%llx idx=%lu, seg len=%d, bvec len=%d\n",
+				__func__, *prev_phys_addr, curr_phys_addr, gpu_page_index, *segment_len, bvec.bv_len);
+			break;  /* Cannot coalesce, don't advance */
+		}
+
+		/* This page can be coalesced - get mgroup and set DMA state */
+		nvfs_mgroup = nvfs_mgroup_from_page(bvec.bv_page);
+		if (unlikely(IS_ERR(nvfs_mgroup))) {
+			nvfs_err("%s:%d mgroup_get_page error for page=%p, stopping coalescing\n",
+				__func__, __LINE__, bvec.bv_page);
+			break;  /* Error getting mgroup, stop coalescing */
+		}
+
+		if (nvfs_mgroup == NULL) {
+			/* Should not happen - we already checked this is GPU page */
+			nvfs_err("%s: unexpected CPU page in coalescing\n", __func__);
+			break;
+		}
+
+		/*
+		 * Check physical contiguity within this bvec.
+		 * If discontinuity found, truncate to contiguous portion.
+		 */
+		{
+			unsigned int contiguous_len;
+			if (!nvfs_check_bvec_contiguity(nvfs_mgroup, &bvec, curr_phys_addr,
+			                                &contiguous_len)) {
+				nvfs_dbg("%s: coalesce bvec truncated from %u to %u bytes\n",
+					__func__, bvec.bv_len, contiguous_len);
+				bvec.bv_len = contiguous_len;
+			}
+		}
+
+		/* Set DMA state for this coalesced page (using potentially truncated length) */
+		nvfs_dbg("%s: setting DMA state for coalesced page=%p len=%u offset=%u\n",
+			__func__, bvec.bv_page, bvec.bv_len, bvec.bv_offset);
+		if (nvfs_mgroup_metadata_set_dma_state(bvec.bv_page, nvfs_mgroup,
+		                                       bvec.bv_len, bvec.bv_offset) != 0) {
+			nvfs_err("%s:%d mgroup_set_dma error for coalesced page=%p\n",
+				__func__, __LINE__, bvec.bv_page);
+			CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+			break;  /* Error setting DMA state, stop coalescing */
+		}
+		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+
+		/* Advance the iterator by the (potentially truncated) bvec length */
+		nvfs_advance_bvec(req_iter, &bvec);
+
+		/* Coalesce this page into current segment (using truncated length if applicable) */
+		*segment_len += bvec.bv_len;
+		*prev_gpu_page_index = gpu_page_index;
+		coalesced_count++;
+		
+		nvfs_dbg("%s: coalesced page %d, new segment_len=%u\n",
+			__func__, coalesced_count, *segment_len);
+	}
+
+	nvfs_dbg("%s: coalescing complete, coalesced %d pages, final segment_len=%u\n",
+		__func__, coalesced_count, *segment_len);
+}
+
+/*
+ * nvfs_map_next_gpu_segment - Map the next GPU segment
+ * @req: The block request to map
+ * @dma_dev: The DMA device (NVMe PCI device)
+ * @iter: Block DMA iterator to be filled
+ * @is_first_call: Is this the first call for this request?
+ * @cookie: output param to be filled up with nvfs_mgroup on SUCCESS
+ *
+ * This function returns ONE GPU segment per call and preserves iterator state.
+ *
+ * Returns: 1 if successfully mapped a segment (iter filled with addr/len),
+ *          0 if no more GPU segments or only CPU pages found,
+ *          NVFS_IO_ERR on error (iter->status set)
+ */
+static int nvfs_map_next_gpu_segment(struct request *req,
+                                     struct device *dma_dev,
+                                     struct blk_dma_iter *iter,
+                                     bool is_first_call,
+				     void** cookie)
+{
+	struct req_iterator *req_iter = &iter->iter;
+	struct bio_vec bvec;
+	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
+	void *gpu_base_dma = NULL;
+	uint64_t curr_phys_addr = 0;
+	unsigned long gpu_page_index = 0;
+	pgoff_t pgoff;
+	int ret;
+	dma_addr_t segment_start_addr;
+	unsigned int segment_len;
+
+	nvfs_dbg("%s: ENTER req=%p is_first_call=%d\n", __func__, req, is_first_call);
+
+	/* Peek at the next bio_vec WITHOUT advancing the iterator */
+	if (!nvfs_peek_next_bvec(req, req_iter, &bvec)) {
+		nvfs_dbg("%s: no more bio_vecs, returning 0\n", __func__);
+		return 0;  /* No more bio_vecs */
+	}
+
+	/* Check if this page is a GPU page */
+	nvfs_mgroup = nvfs_mgroup_from_page(bvec.bv_page);
+	if (unlikely(IS_ERR(nvfs_mgroup))) {
+		nvfs_err("%s:%d mgroup_get_page error for page=%p\n", 
+			__func__, __LINE__, bvec.bv_page);
+		iter->status = BLK_STS_IOERR;
+		return NVFS_IO_ERR;
+	}
+
+	/* If CPU page, return 0 WITHOUT advancing - let kernel handle it */
+	if (nvfs_mgroup == NULL) {
+		nvfs_dbg("%s: CPU page detected, returning 0 to let kernel handle it\n", __func__);
+		return 0;
+	}
+
+	nvfs_dbg("%s: GPU page detected, page=%p len=%u offset=%u\n",
+		__func__, bvec.bv_page, bvec.bv_len, bvec.bv_offset);
+
+
+	nvfs_dbg("%s: validating req %p\n", __func__, req);
+	ret = nvfs_validate_gpu_request(req, nvfs_mgroup);
+	if (ret != 0) {
+		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+		nvfs_err("%s: validation failed\n", __func__);
+		iter->status = BLK_STS_IOERR;
+		return NVFS_IO_ERR;
+	}
+
+	/*
+	 * Calculate the actual starting page based on bv_offset.
+	 * When bv_offset >= PAGE_SIZE, the data starts in a different shadow buffer
+	 * page than bvec.bv_page. We must use the correct page for:
+	 * 1. Getting GPU physical address (for contiguity tracking)
+	 * 2. Getting gpu_page_index (for coalescing decisions)
+	 * 3. Getting DMA address (for actual I/O)
+	 */
+	{
+		unsigned int page_skip = bvec.bv_offset / PAGE_SIZE;
+		unsigned int offset_in_page = bvec.bv_offset % PAGE_SIZE;
+		unsigned long rel_page_index;
+		unsigned long target_page_index;
+		struct page *actual_page = NULL;
+		struct blk_plug *plug = NULL;
+
+		if (page_skip > 0) {
+			/* Calculate relative page index within mgroup */
+			rel_page_index = NVFS_PAGE_INDEX(bvec.bv_page) % NVFS_MAX_SHADOW_PAGES;
+			target_page_index = rel_page_index + page_skip;
+
+			/* Bounds check */
+			if (target_page_index >= NVFS_MAX_SHADOW_PAGES ||
+			    target_page_index >= (nvfs_mgroup->nvfs_blocks_count /
+			                          (PAGE_SIZE / NVFS_BLOCK_SIZE))) {
+				nvfs_err("%s:%d page index out of bounds: target=%lu max=%lu\n",
+					__func__, __LINE__, target_page_index,
+					nvfs_mgroup->nvfs_blocks_count / (PAGE_SIZE / NVFS_BLOCK_SIZE));
+				CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+				iter->status = BLK_STS_IOERR;
+				return NVFS_IO_ERR;
+			}
+
+			actual_page = nvfs_mgroup->nvfs_ppages[target_page_index];
+			nvfs_dbg("%s: bv_offset=%u spans pages: rel_idx=%lu target_idx=%lu "
+				  "offset_in_page=%u orig_page=%p actual_page=%p\n",
+				  __func__, bvec.bv_offset, rel_page_index, target_page_index,
+				  offset_in_page, bvec.bv_page, actual_page);
+		} else {
+			/* No page skip needed, use original page */
+			actual_page = bvec.bv_page;
+			nvfs_dbg("%s: no page skip needed, bv_offset=%u < PAGE_SIZE\n",
+				  __func__, bvec.bv_offset);
+		}
+
+		/* Get GPU physical address for tracking contiguity - use actual_page! */
+		curr_phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, actual_page);
+		nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page,
+		                                  &gpu_page_index, &pgoff);
+		/* Adjust pgoff to include the offset within the actual page */
+		pgoff = offset_in_page;
+
+		nvfs_dbg("%s: first page phys_addr=0x%llx gpu_page_index=%lu pgoff=%lu (actual_page=%p)\n",
+			__func__, curr_phys_addr, gpu_page_index, pgoff, actual_page);
+
+		/*
+		 * Check physical contiguity within this bvec.
+		 * If the bvec spans multiple pages that are not physically contiguous,
+		 * truncate to only the contiguous portion.
+		 */
+		{
+			unsigned int contiguous_len;
+			if (!nvfs_check_bvec_contiguity(nvfs_mgroup, &bvec, curr_phys_addr,
+			                                &contiguous_len)) {
+				nvfs_info("%s: bvec truncated from %u to %u bytes due to discontinuity\n",
+					__func__, bvec.bv_len, contiguous_len);
+				bvec.bv_len = contiguous_len;
+			}
+		}
+
+		/* Set DMA state for this GPU page (using potentially truncated length) */
+		nvfs_dbg("%s: setting DMA state for page=%p len=%u offset=%u\n",
+				__func__, bvec.bv_page, bvec.bv_len, bvec.bv_offset);
+		if (nvfs_mgroup_metadata_set_dma_state(bvec.bv_page, nvfs_mgroup,
+					bvec.bv_len, bvec.bv_offset) != 0) {
+			nvfs_err("%s:%d mgroup_set_dma error for page=%p\n", 
+					__func__, __LINE__, bvec.bv_page);
+			CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+			iter->status = BLK_STS_IOERR;
+			return NVFS_IO_ERR;
+		}
+
+		/*
+		 * Advance the iterator by the (potentially truncated) bvec length.
+		 * nvfs_advance_bvec uses bvec.bv_len to advance, so truncation is honored.
+		 */
+		nvfs_advance_bvec(req_iter, &bvec);
+
+		/* Start the segment with this page (using truncated length if applicable) */
+		segment_len = bvec.bv_len;
+
+		/* Try to coalesce following contiguous pages based on physical address */
+		nvfs_coalesce_gpu_pages(req, req_iter, &segment_len,
+		                        &curr_phys_addr, &gpu_page_index);
+
+		plug = current->plug;
+		current->plug = NULL;
+		nvfs_dbg("%s: getting DMA mapping for req:%p, bvec.bv_page %p, actual_page %p segment_len=%u, offset %d\n",
+				__func__, req, bvec.bv_page, actual_page, segment_len, bvec.bv_offset);
+		ret = nvfs_get_dma(to_pci_dev(dma_dev), actual_page, &gpu_base_dma, segment_len);
+		current->plug = plug;
+		if (ret == NVFS_IO_ERR || ret == NVFS_BAD_REQ) {
+			nvfs_err("%s:%d nvfs_get_dma failed (ret=%d) for page=%p\n",
+					__func__, __LINE__, ret, actual_page);
+			CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+			iter->status = BLK_STS_IOERR;
+			return NVFS_IO_ERR;
+		}
+		segment_start_addr = (dma_addr_t)gpu_base_dma + offset_in_page;
+	}
+
+	/* Fill in the iterator with the segment we built */
+	iter->addr = segment_start_addr;
+	iter->len = segment_len;
+	iter->status = BLK_STS_OK;
+
+	/* A reference on nvfs_mgroup is held during nvfs_get_dma and hence this isn't a use after free problem */
+	if(cookie != NULL)
+		*cookie = (void*)nvfs_mgroup;
+
+	CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+	nvfs_dbg("%s: EXIT SUCCESS - mapped segment DMA:0x%llx len:%u, mgroup %p\n",
+		__func__, (unsigned long long)iter->addr, iter->len, nvfs_mgroup);
+
+	return 1;
+}
+
+/*
+ * nvfs_blk_rq_dma_map_iter_start - Start DMA mapping iteration for a request
+ * @req: The block request to map
+ * @dma_dev: The DMA device (NVMe PCI device)
+ * @state: DMA IOVA state (managed by kernel, we don't use IOVA for GPU pages)
+ * @iter: Block DMA iterator to be filled
+ * @cookie: output param to be filled up with nvfs_mgroup on SUCCESS
+ *
+ * This function replaces nvfs_blk_rq_map_sg() in the new 6.17+ kernel approach.
+ * It initializes iteration over the request's bio pages and maps the first
+ * GPU page segment, returning its DMA address and length in the iterator.
+ *
+ * Returns: 1 if we successfully mapped a GPU segment (indicating NVFS should handle this),
+ *          0 if this is a CPU-only request (let kernel handle it),
+ *          NVFS_IO_ERR on error
+ */
+static int nvfs_blk_rq_dma_map_iter_start(struct request *req,
+                                        struct device *dma_dev,
+                                        struct dma_iova_state *state,
+                                        struct blk_dma_iter *iter,
+					void **cookie)
+{
+	int ret;
+
+	nvfs_dbg("%s: ====== NVFS DMA MAP ITER START ====== req=%p\n", __func__, req);
+
+	/* Basic request validation */
+	if (!nvfs_blk_rq_check(req)) {
+		nvfs_dbg("%s: nvfs_blk_rq_check failed\n", __func__);
+		return 0;
+	}
+
+	/* Initialize the bio iterator to the start of the request */
+	iter->iter.bio = req->bio;
+	if (!iter->iter.bio) {
+		nvfs_err("%s: req->bio is NULL\n", __func__);
+		return 0;
+	}
+	iter->iter.iter = iter->iter.bio->bi_iter;
+	iter->status = BLK_STS_OK;
+
+	nvfs_dbg("%s: initialized iterator, calling nvfs_map_next_gpu_segment\n", __func__);
+
+	/* Use common helper to map the first segment */
+	ret = nvfs_map_next_gpu_segment(req, dma_dev, iter, true, cookie);
+	//CPU Page detected
+	if(ret == 0) 
+		return ret;
+	else 
+		return ret > 0 ? 1 : 0;
+}
+
+/*
+ * nvfs_blk_rq_dma_map_iter_next - Map the next DMA segment for a request
+ * @req: The block request to map
+ * @dma_dev: The DMA device (NVMe PCI device)
+ * @state: DMA IOVA state (managed by kernel, we don't use IOVA for GPU pages)
+ * @iter: Block DMA iterator to be filled
+ *
+ * This function continues DMA mapping iteration started by nvfs_blk_rq_dma_map_iter_start().
+ * It maps the next GPU page segment in the request, potentially coalescing consecutive
+ * pages into a single DMA segment if they are physically contiguous.
+ *
+ * Returns: 1 if we successfully mapped the next segment,
+ *          0 if there are no more segments to map,
+ *          NVFS_IO_ERR on error (status set in iter->status)
+ */
+static int nvfs_blk_rq_dma_map_iter_next(struct request *req,
+                                        struct device *dma_dev,
+                                        struct dma_iova_state *state,
+                                        struct blk_dma_iter *iter)
+{
+	int ret;
+
+	nvfs_dbg("%s: ====== NVFS DMA MAP ITER NEXT ====== req=%p\n", __func__, req);
+
+	/* 
+	 * The iter->iter is already positioned from either _start or previous _next call.
+	 * Our nvfs_peek_next_bvec() will continue from where we left off.
+	 */
+
+	/* Use common helper to map the next segment */
+	ret = nvfs_map_next_gpu_segment(req, dma_dev, iter, false, NULL);
+	
+	//CPU Page detected
+	if(ret == 0) 
+		return ret;
+	else 
+		return ret > 0 ? 1 : 0;
+}
+
+/*
+ * nvfs_dma_unmap_page - Unmap a single DMA page
+ * @device: The DMA device
+ * @page: The page being unmapped
+ * @addr: DMA address to unmap
+ * @size: Size of the mapping
+ * @dir: DMA direction
+ *
+ * This function is called by the NVMe driver to unmap individual GPU pages
+ * after I/O completion. It replicates what nvfs_dma_unmap_sg() does but for
+ * a single page in the iterator-based API.
+ *
+ * Returns: 0 on success (GPU page), NVFS_IO_ERR on error
+ */
+static int nvfs_dma_unmap_page(struct device *device,
+		               void *cookie,
+		               dma_addr_t addr,
+		               size_t size,
+		               enum dma_data_direction dir)
+{
+	if (unlikely(cookie == NULL)) {
+		nvfs_err("%s: nvfs_mgroup passed is NULL\n",
+			__func__);
+		return NVFS_IO_ERR;
+	}
+
+	nvfs_dbg("%s: unmap DMA addr:0x%llx size:%zu dir:%d\n",
+		__func__, (unsigned long long)addr, size, dir);
+	
+	nvfs_mgroup_ptr_t nvfs_mgroup = (nvfs_mgroup_ptr_t)cookie;
+	nvfs_mgroup_put_dma(nvfs_mgroup);
+	return 0;
+}
+#endif /* HAVE_BLK_RQ_DMA_MAP_ITER_START */
+
 static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 	                         struct scatterlist *sglist,
 				 int nents,
@@ -903,6 +1630,24 @@ static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	.nvfs_device_priority           = nvfs_device_priority,
 #endif
 
+// V2 ops default settings for kernels with iterator API
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+#ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
+#define SET_DEFAULT_OPS_V2                                      \
+	.ft_bmap                        = NVIDIA_FS_SET_BLK_DMA_MAP_ITER_FT_ALL, \
+	.nvfs_is_gpu_page               = nvfs_is_gpu_page,     \
+	.nvfs_gpu_index                 = nvfs_gpu_index,               \
+	.nvfs_device_priority           = nvfs_device_priority, \
+	.nvfs_get_gpu_sglist_rdma_info  = nvfs_get_gpu_sglist_rdma_info,
+#else
+#define SET_DEFAULT_OPS_V2                                      \
+	.ft_bmap                        = NVIDIA_FS_SET_BLK_DMA_MAP_ITER_FT_ALL, \
+	.nvfs_is_gpu_page               = nvfs_is_gpu_page,     \
+	.nvfs_gpu_index                 = nvfs_gpu_index,               \
+	.nvfs_device_priority           = nvfs_device_priority,
+#endif
+#endif /* HAVE_BLK_RQ_DMA_MAP_ITER_START */
+
 
 struct nvfs_dma_rw_ops nvfs_dev_dma_rw_ops = {
 	SET_DEFAULT_OPS
@@ -929,5 +1674,15 @@ struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops = {
 struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops = {
 	SET_DEFAULT_OPS
 	.nvfs_get_gpu_sglist_rdma_info = nvfs_get_gpu_sglist_rdma_info,
+};
+#endif
+
+// V2 ops for NVMe driver (for future extensibility) - only for kernels with iterator API
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+struct nvfs_dma_rw_blk_iter_ops nvfs_nvme_dma_rw_blk_iter_ops = {
+	SET_DEFAULT_OPS_V2
+	.nvfs_blk_rq_dma_map_iter_start = nvfs_blk_rq_dma_map_iter_start,
+	.nvfs_blk_rq_dma_map_iter_next  = nvfs_blk_rq_dma_map_iter_next,
+	.nvfs_dma_unmap_page = nvfs_dma_unmap_page,
 };
 #endif

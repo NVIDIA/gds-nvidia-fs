@@ -24,6 +24,8 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
+#include <linux/string.h>
+#include <linux/version.h>
 
 #include "nvfs-dma.h"
 #include "config-host.h"
@@ -80,7 +82,27 @@ int probe_module_list(void) {
 		// Note: on registration failure, it is expected that vendor module
 		// MUST set nvfs_dma_ops to null since dereg func will not be invoked
 		// on registration failure.
-		ret = mod_entry->reg_func(mod_entry->ops);
+		
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+		// Check if this is NVMe module to use v2 ops (kernels with iterator API)
+		if (strcmp(mod_entry->name, NVFS_PROC_MOD_NVME_KEY) == 0) {
+			// Use v2 registration for NVMe
+			nvfs_register_dma_ops_v2_fn_t reg_func_v2 = 
+				(nvfs_register_dma_ops_v2_fn_t)mod_entry->reg_func;
+			ret = reg_func_v2((struct nvfs_dma_rw_blk_iter_ops *)mod_entry->ops);
+		} else {
+			// Use v1 registration for all other modules
+			nvfs_register_dma_ops_fn_t reg_func_v1 = 
+				(nvfs_register_dma_ops_fn_t)mod_entry->reg_func;
+			ret = reg_func_v1((struct nvfs_dma_rw_ops *)mod_entry->ops);
+		}
+#else
+		// Use v1 registration for all modules (kernels without iterator API)
+		nvfs_register_dma_ops_fn_t reg_func_v1 = 
+			(nvfs_register_dma_ops_fn_t)mod_entry->reg_func;
+		ret = reg_func_v1((struct nvfs_dma_rw_ops *)mod_entry->ops);
+#endif
+		
 		if (ret) {
 			pr_err("nvfs registration failed for module sym :%s, error :%d\n",
 				mod_entry->reg_ksym, ret);

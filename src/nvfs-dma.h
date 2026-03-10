@@ -28,12 +28,18 @@
 #include <linux/types.h>
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
+#include <linux/version.h>
 #ifdef HAVE_BLK_MQ_PCI_H
 #include <linux/blk-mq-pci.h>
 #endif
 #include <linux/scatterlist.h>
 #include <linux/page-flags.h>
 #include <linux/dma-direction.h>
+
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+#include <linux/blk-mq-dma.h>
+#include <linux/dma-mapping.h>
+#endif
 
 #ifdef HAVE_BLK_INTEGRITY_H
 #include <linux/blk-integrity.h>
@@ -100,7 +106,9 @@ enum ft_bits {
 	nvfs_ft_map_sglist          		= 1ULL << 1,
 	nvfs_ft_is_gpu_page         		= 1ULL << 2,
 	nvfs_ft_device_priority     		= 1ULL << 3,
-	nvfs_ft_get_gpu_sglist_rdma_info 	= 1ULL << 4,	
+	nvfs_ft_get_gpu_sglist_rdma_info 	= 1ULL << 4,
+	nvfs_ft_blk_dma_map_iter_start		= 1ULL << 5,	
+	nvfs_ft_blk_dma_map_iter_next		= 1ULL << 6,	
 };
 
 // check features for use in registration with vendor drivers
@@ -110,11 +118,55 @@ enum ft_bits {
 #define NVIDIA_FS_CHECK_FT_DEVICE_PRIORITY(ops)     ((ops)->ft_bmap & nvfs_ft_device_priority)
 #define NVIDIA_FS_CHECK_FT_GET_GPU_sglist_RDMA_INFO(ops)   \
 						    ((ops)->ft_bmap & nvfs_ft_get_gpu_sglist_rdma_info)
+#define NVIDIA_FS_CHECK_FT_BLK_DMA_MAP_ITER_START(ops)    ((ops)->ft_bmap & nvfs_ft_blk_dma_map_iter_start)
+#define NVIDIA_FS_CHECK_FT_BLK_DMA_MAP_ITER_NEXT(ops)     ((ops)->ft_bmap & nvfs_ft_blk_dma_map_iter_next)
 // publish features
 #define NVIDIA_FS_SET_FT_ALL  (nvfs_ft_prep_sglist | nvfs_ft_map_sglist | nvfs_ft_is_gpu_page | nvfs_ft_device_priority | nvfs_ft_get_gpu_sglist_rdma_info)
 
 typedef int (*nvfs_register_dma_ops_fn_t) (struct nvfs_dma_rw_ops *ops);
 typedef void (*nvfs_unregister_dma_ops_fn_t) (void);
+
+//Ops structure (for future extensibility) - only for kernels with iterator API
+#ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+#define NVIDIA_FS_SET_BLK_DMA_MAP_ITER_FT_ALL  (nvfs_ft_is_gpu_page | nvfs_ft_device_priority | nvfs_ft_blk_dma_map_iter_start | nvfs_ft_blk_dma_map_iter_next)
+
+// Forward declarations for blk_iter specific types
+struct dma_iova_state;
+struct blk_dma_iter;
+
+struct nvfs_dma_rw_blk_iter_ops {
+	unsigned long long ft_bmap; // feature bitmap
+
+	int (*nvfs_blk_rq_dma_map_iter_start) (struct request *req,
+                                               struct device *dma_dev,
+                                               struct dma_iova_state *state,
+                                               struct blk_dma_iter *iter,
+					       void **cookie);
+
+	int (*nvfs_blk_rq_dma_map_iter_next) (struct request *req,
+                                              struct device *dma_dev,
+                                              struct dma_iova_state *state,
+                                              struct blk_dma_iter *iter);
+
+	int (*nvfs_dma_unmap_page) (struct device *device,
+				    void *cookie,
+				    dma_addr_t addr,
+				    size_t size,
+				    enum dma_data_direction dir);
+
+	bool (*nvfs_is_gpu_page) (struct page *page);
+
+	unsigned int (*nvfs_gpu_index) (struct page *page);
+
+	unsigned int (*nvfs_device_priority) (struct device *dev, unsigned int gpu_index);
+	
+	int (*nvfs_get_gpu_sglist_rdma_info) (struct scatterlist *sglist,
+					    int nents,
+					    struct nvfs_rdma_info *rdma_infop);
+};
+
+typedef int (*nvfs_register_dma_ops_v2_fn_t) (struct nvfs_dma_rw_blk_iter_ops *ops);
+#endif /* HAVE_BLK_RQ_DMA_MAP_ITER_START */
 
 // Auto probing
 struct module_entry {
@@ -123,10 +175,10 @@ struct module_entry {
         const char *name;    // module owner
         const char *version; // module version number
         const char *reg_ksym; // registration symbol from symbol table above
-        nvfs_register_dma_ops_fn_t reg_func; // register function pointer
+        void *reg_func; // register function pointer (can be v1 or v2)
         const char *dreg_ksym; //deregister symbol
         nvfs_unregister_dma_ops_fn_t dreg_func; // deregister function pointer
-        struct nvfs_dma_rw_ops *ops; // args
+        void *ops; // args (can be nvfs_dma_rw_ops or nvfs_dma_rw_blk_iter_ops)
 };
 
 int nr_modules(void);

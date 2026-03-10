@@ -259,8 +259,8 @@ static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
 
 	nvfs_mgroup = nvfs_mgroup_get(cur_base_index);
 	if (nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
-		nvfs_err("%s:%d nvfs_mgroup is invalid for index %ld cpuvaddr %llx\n",
-			__func__, __LINE__, (unsigned long)NVFS_PAGE_INDEX(page),
+		nvfs_err("%s:%d nvfs_mgroup is invalid for index %lu cpuvaddr %llx\n",
+			__func__, __LINE__, NVFS_PAGE_INDEX(page),
 			cpuvaddr);
 		goto release_page;
 	}
@@ -1084,7 +1084,6 @@ uint64_t nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup_ptr_t nvfs_mgroup, str
 
 	nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, page,
 			&gpu_page_index, &pgoff);
-
 	phys_base_addr = gpu_info->page_table->pages[gpu_page_index]->physical_address;
 	phys_start_addr = phys_base_addr + pgoff;
 
