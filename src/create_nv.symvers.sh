@@ -81,12 +81,17 @@ do
 		continue
 	fi
 
-	# WA for nm: nvidia.ko.xz: File format not recognized
+	# WA for nm: nvidia.ko.xz/nvidia.ko.zst: File format not recognized
 	case "$nvidia_mod" in
 		*ko.xz)
 			/bin/cp -fv $nvidia_mod .
 			nvidia_mod=$(basename $nvidia_mod | sed -e "s/.xz//g")
 			xz -d ${nvidia_mod}.xz
+			;;
+		*ko.zst)
+			/bin/cp -fv $nvidia_mod .
+			nvidia_mod=$(basename $nvidia_mod | sed -e "s/.zst//g")
+			zstd -f -d ${nvidia_mod}.zst
 			;;
 	esac
 
@@ -94,16 +99,25 @@ do
 		continue
 	fi
 
-	# On some PPC kernels we might have relative CRCs, so we can't build symvers based on nm output.
-	# In that case try to recompile the nvidia driver from source code and get the needed
-	# nvidia_p2p_* symbols from the generated Module.symvers file.
-	# If we fail to generate Module.symvers, then just build the nv_peer_mem without
-	# specifying the nvidia_p2p_ symbol versions.
-	if (nm -o $nvidia_mod | grep "$crc_mod_str" | grep -qe "\sR\s*__crc"); then
-		echo "-W- Module $nvidia_mod contains relative CRCs, cannot get symbols from it!" >&2
-		try_compile_nvidia_sources $nvidia_mod
-		break
-	fi
+	# On some architectures (PPC, aarch64) and with newer nvidia drivers on x86, the
+	# nvidia.ko uses relative CRCs (position-independent), which nm cannot resolve to
+	# absolute values. In that case, use the pre-built Module.symvers from the nvidia
+	# DKMS build if available, otherwise fall back to recompiling nvidia from source.
+	# If neither succeeds, nv.symvers is left empty and nvidia-fs is built without
+	# nvidia_p2p_* symbol versions (triggers "no symbol version" warning at insmod).
+	#if (nm -o $nvidia_mod | grep "$crc_mod_str" | grep -qe "\s[rR]\s*__crc"); then
+	#	echo "-W- Module $nvidia_mod contains relative CRCs, cannot get symbols from it!" >&2
+	#	nv_version=$(/sbin/modinfo -F version -k "$KVER" $mod 2>/dev/null)
+	#	dkms_symvers=$(find /var/lib/dkms/nvidia -name "Module.symvers" -path "*/${nv_version}/*" -path "*/${KVER}/*" 2>/dev/null | head -1)
+	#	if [ -n "$dkms_symvers" ] && grep -q "nvidia_p2p_" "$dkms_symvers" 2>/dev/null; then
+	#		echo "Using nvidia DKMS Module.symvers: $dkms_symvers"
+	#		grep "nvidia_p2p_" "$dkms_symvers" > ${MOD_SYMVERS}
+	#		echo "Created: ${MOD_SYMVERS}"
+	#	else
+	#		try_compile_nvidia_sources $nvidia_mod
+	#	fi
+	#	break
+	#fi
 
 	echo "Getting symbol versions from $nvidia_mod ..."
 	while read -r line

@@ -1,3 +1,5 @@
+nvidia-fs (2.29.0) RELEASE; urgency=low
+  * Fix modpost warnings
 nvidia-fs (2.28.2) RELEASE; urgency=low
   * Fix compilation issues for 6.17 kernel
   * Update nvidia-fs to adapt to blk based API to map NVMe DMA requests
