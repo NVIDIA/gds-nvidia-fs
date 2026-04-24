@@ -1,3 +1,5 @@
+nvidia-fs (2.28.4) RELEASE; urgency=low
+  * Fix RDMA descriptor corruption for GPU buffers >= 4GiB
 nvidia-fs (2.28.2) RELEASE; urgency=low
   * Fix compilation issues for 6.17 kernel
   * Update nvidia-fs to adapt to blk based API to map NVMe DMA requests

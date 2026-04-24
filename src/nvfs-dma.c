@@ -1050,7 +1050,7 @@ static int nvfs_map_next_gpu_segment(struct request *req,
 			unsigned int contiguous_len;
 			if (!nvfs_check_bvec_contiguity(nvfs_mgroup, &bvec, curr_phys_addr,
 			                                &contiguous_len)) {
-				nvfs_info("%s: bvec truncated from %u to %u bytes due to discontinuity\n",
+				nvfs_dbg("%s: bvec truncated from %u to %u bytes due to discontinuity\n",
 					__func__, bvec.bv_len, contiguous_len);
 				bvec.bv_len = contiguous_len;
 			}
