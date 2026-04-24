@@ -85,7 +85,12 @@ int nvfs_set_rdma_reg_info_to_mgroup(
 
 	rdma_infop->rkey = rdma_reg_info_args->rkey[0];
 	rdma_infop->rem_vaddr = gpuvaddr;
-	rdma_infop->size = gpu_info->gpu_buf_len;
+	/*
+	 * Cap size to U32_MAX for GPU buffers >= 4GiB since rdma_infop->size
+	 * is uint32_t. The actual IO size will be resolved in the read/write
+	 * IO path (nvfs_get_gpu_sglist_rdma_info).
+	 */
+	rdma_infop->size = min_t(u64, gpu_info->gpu_buf_len, (u64)U32_MAX);
 
 	nvfs_dbg("%s:RDMA Info version = %d, flags = %d, lid %x, qp_num %x, gid %llx:%llx\
 			dckey: %x, rkey %x, size %d, rem_vaddr %llx\n",
