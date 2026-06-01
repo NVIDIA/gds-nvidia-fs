@@ -50,6 +50,13 @@
 #include "nvfs-kernel-interface.h"
 #include "config-host.h"
 
+#ifdef HAVE_MEMDESC_FLAGS_T
+#define nvfs_page_flags(page) ((page)->flags.f)
+#else
+#define nvfs_page_flags(page) ((page)->flags)
+#endif
+
+
 static DEFINE_HASHTABLE(nvfs_io_mgroup_hash, NVFS_MAX_SHADOW_ALLOCS_ORDER);
 static spinlock_t lock ____cacheline_aligned;
 
@@ -405,7 +412,7 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
                 // mapping should be NULL
                 if(pages[j]->mapping != NULL) {
 	                nvfs_err("Page: %p page->mapping: %p page->flags: %lx \n",
-				pages[j], pages[j]->mapping, pages[j]->flags);
+				pages[j], pages[j]->mapping, nvfs_page_flags(pages[j]));
                         goto out;
                 }
                 cur_base_index = (NVFS_PAGE_INDEX(pages[j]) >> NVFS_MAX_SHADOW_PAGES_ORDER);
@@ -426,7 +433,7 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 
 	        nvfs_dbg("Page: %lx , nvfs_mgroup: %p, base_index: %lx page-index: %lx page->flags: %lx \n",
                    (unsigned long)pages[j], nvfs_mgroup, cur_base_index,
-                   NVFS_PAGE_INDEX(pages[j]), pages[j]->flags);
+                   NVFS_PAGE_INDEX(pages[j]), nvfs_page_flags(pages[j]));
 		// No need of page reference as we already have one when inserting page to VMA
 #ifdef HAVE_PIN_USER_PAGES_FAST
 		unpin_user_page(pages[j]);
@@ -643,10 +650,12 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 	        nvfs_err("mmap size not a multiple of 64K: 0x%lx for size >64k \n", length);
                 goto error;
         }
-#ifdef NVFS_VM_FLAGS_NOT_CONSTANT
+#if defined(NVFS_VM_FLAGS_NOT_CONSTANT)
 	vm_flags = vma->vm_flags;
-#else
+#elif defined(HAVE_VM_FLAGS_PRIVATE)
 	vm_flags = ACCESS_PRIVATE(vma, __vm_flags);
+#else
+	vm_flags = vma->vm_flags;
 #endif
         if ((vm_flags & (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE)) != (VM_MAYREAD|VM_READ|VM_MAYWRITE|VM_WRITE))
         {
@@ -1010,7 +1019,7 @@ static void nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvf
 
         nvfs_mdata->nvfs_state = NVFS_IO_QUEUED;
         nvfs_dbg("page %p page->mapping: %lx, page->flags: %lx\n",
-                          page, (unsigned long)page->mapping, page->flags);
+                          page, (unsigned long)page->mapping, nvfs_page_flags(page));
 }
 
 

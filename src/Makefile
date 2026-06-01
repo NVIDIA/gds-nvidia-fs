@@ -112,7 +112,7 @@ nv_symbols:
 	@ cat nv.symvers >> Module.symvers
 
 module: nv_symbols nv_configure
-	@ KCPPFLAGS="$(NVFS_MODULE_FLAGS) -DNVFS_BATCH_SUPPORT=y" CONFIG_NVFS_BATCH_SUPPORT=y CONFIG_NVFS_STATS=y $(MAKE) -j4 -C $(KDIR) $(MAKE_PARAMS) M=$$PWD modules
+	@ KCPPFLAGS="$(NVFS_MODULE_FLAGS) -DNVFS_BATCH_SUPPORT=y" CONFIG_NVFS_BATCH_SUPPORT=y CONFIG_NVFS_STATS=y KBUILD_EXTRA_SYMBOLS=$(CURDIR)/nv.symvers $(MAKE) -j4 -C $(KDIR) $(MAKE_PARAMS) M=$$PWD modules
 
 install:
 	[ -d $(DESTDIR)/$(MODULE_DESTDIR) ] || mkdir -p $(DESTDIR)/$(MODULE_DESTDIR)

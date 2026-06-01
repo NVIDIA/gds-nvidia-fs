@@ -188,10 +188,6 @@ void cleanup_module_list(void);
 int nvfs_blk_register_dma_ops(void);
 void nvfs_blk_unregister_dma_ops(void);
 
-#define BVEC_FMT "page-flags :0x%lx index :%lu off :%u len :%u"
-#define BVEC_ARG(args) bvec.bv_page->flags, page_index(bvec.bv_page), \
-                       bvec.bv_offset, bvec.bv_len
-
 //#define TEST_DISCONTIG_ADDR
 
 #ifdef TEST_DISCONTIG_ADDR

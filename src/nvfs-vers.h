@@ -26,7 +26,7 @@
 
 #define NVFS_DRIVER_MAJOR_VERSION   2 //2-bytes
 
-#define NVFS_DRIVER_MINOR_VERSION   28 //2-bytes
+#define NVFS_DRIVER_MINOR_VERSION   29 //2-bytes
 
 // template for build version
 #define NVFS_DRIVER_PATCH_VERSION  4

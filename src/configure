@@ -588,6 +588,49 @@ if compile_prog "Checking if blk_rq_dma_map_iter_start is present..."; then
 fi
 
 
+cat > $TEST_C <<EOF
+#include "test.h"
+#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
+#include <linux/blk-mq-dma.h>
+
+int test(void)
+{
+	struct blk_map_iter iter;
+	(void)iter;
+	return 0;
+}
+EOF
+if compile_prog "Checking if blk_map_iter is present..."; then
+        output_sym "HAVE_BLK_MAP_ITER"
+fi
+
+cat > $TEST_C <<EOF
+#include "test.h"
+#include <linux/mm_types.h>
+int test(void)
+{
+    struct vm_area_struct *vma = NULL;
+    return (int)ACCESS_PRIVATE(vma, __vm_flags);
+}
+EOF
+if compile_prog "Checking if vm_area_struct has __vm_flags (private)..."; then
+        output_sym "HAVE_VM_FLAGS_PRIVATE"
+fi
+
+cat > $TEST_C <<EOF
+#include "test.h"
+#include <linux/mm_types.h>
+int test(void)
+{
+    struct page p;
+    return (int)p.flags.f;
+}
+EOF
+if compile_prog "Checking if page->flags is memdesc_flags_t (struct)..."; then
+        output_sym "HAVE_MEMDESC_FLAGS_T"
+fi
+
 echo "#endif" >> $config_host_h
 rm -rf build
 
