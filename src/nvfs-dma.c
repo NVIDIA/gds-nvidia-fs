@@ -55,6 +55,14 @@ struct nvfs_dma_rw_ops nvfs_sfxv_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_nvmesh_dma_rw_ops;
 struct nvfs_dma_rw_ops nvfs_ibm_scale_rdma_ops;
 #ifdef HAVE_BLK_RQ_DMA_MAP_ITER_START
+
+
+/* Kernel 7.0+ replaced req_iterator with blk_map_iter inside blk_dma_iter */
+#ifdef HAVE_BLK_MAP_ITER
+#define nvfs_rq_iter_t struct blk_map_iter
+#else
+#define nvfs_rq_iter_t struct req_iterator
+#endif
 struct nvfs_dma_rw_blk_iter_ops nvfs_nvme_dma_rw_blk_iter_ops;
 #endif
 // nvfs symbol table
@@ -541,7 +549,7 @@ static int nvfs_nvme_blk_rq_map_sg(struct request_queue *q,
  *
  * Returns: true if got a bio_vec, false if no more bio_vecs
  */
-static bool nvfs_peek_next_bvec(struct request *req, struct req_iterator *req_iter,
+static bool nvfs_peek_next_bvec(struct request *req, nvfs_rq_iter_t *req_iter,
                                 struct bio_vec *bvec)
 {
 	/* If no more data in current bio, we're done */
@@ -565,7 +573,7 @@ static bool nvfs_peek_next_bvec(struct request *req, struct req_iterator *req_it
  * This advances the iterator by the length of the given bio_vec.
  * Should be called after nvfs_peek_next_bvec() to consume the bio_vec.
  */
-static void nvfs_advance_bvec(struct req_iterator *req_iter, struct bio_vec *bvec)
+static void nvfs_advance_bvec(nvfs_rq_iter_t *req_iter, struct bio_vec *bvec)
 {
 	nvfs_dbg("%s: advancing by %u bytes\n", __func__, bvec->bv_len);
 	bio_advance_iter_single(req_iter->bio, &req_iter->iter, bvec->bv_len);
@@ -810,7 +818,7 @@ static bool nvfs_check_bvec_contiguity(nvfs_mgroup_ptr_t nvfs_mgroup,
  * once for the entire segment on the base page.
  */
 static void nvfs_coalesce_gpu_pages(struct request *req,
-                                    struct req_iterator *req_iter,
+                                    nvfs_rq_iter_t *req_iter,
                                     unsigned int *segment_len,
                                     uint64_t *prev_phys_addr,
                                     unsigned long *prev_gpu_page_index)
@@ -939,7 +947,7 @@ static int nvfs_map_next_gpu_segment(struct request *req,
                                      bool is_first_call,
 				     void** cookie)
 {
-	struct req_iterator *req_iter = &iter->iter;
+	nvfs_rq_iter_t *req_iter = &iter->iter;
 	struct bio_vec bvec;
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
 	void *gpu_base_dma = NULL;
