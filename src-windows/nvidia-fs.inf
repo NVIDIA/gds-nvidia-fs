@@ -1,0 +1,209 @@
+;
+; NVIDIA GDS (GPUDirect Storage) Windows Kernel Driver Installation File
+; Copyright (c) 2021-2025, NVIDIA CORPORATION. All rights reserved.
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%ManufacturerName%
+CatalogFile=nvidia-fs.cat
+DriverVer=10/12/2025,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+nvidia-fs_Device_CoInstaller_CopyFiles = 11
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+nvidia-fs.sys  = 1,,
+;
+
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%nvidia-fs.DeviceDesc%=nvidia-fs_Device, Root\nvidia-fs
+
+[nvidia-fs_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+nvidia-fs.sys
+
+[nvidia-fs_Device.NT.HW]
+AddReg=nvidia-fs_Device_AddReg
+
+[nvidia-fs_Device_AddReg]
+; Security descriptor for the device
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;WD)"
+; Allow access to the device from user mode applications
+HKR,,DeviceCharacteristics,0x10001,0x0100
+; Set device type
+HKR,,DeviceType,0x10001,0x00000022
+
+;-------------- Service installation
+[nvidia-fs_Device.NT.Services]
+AddService = nvidia-fs,%SPSVCINST_ASSOCSERVICE%, nvidia-fs_Service_Inst
+
+; -------------- nvidia-fs driver install sections
+[nvidia-fs_Service_Inst]
+DisplayName    = %nvidia-fs.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\nvidia-fs.sys
+
+[nvidia-fs_Device.NT.Wdf]
+KmdfService =  nvidia-fs, nvidia-fs_wdfsect
+
+[nvidia-fs_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+;
+;--- nvidia-fs_Device Coinstaller installation ------
+;
+
+[nvidia-fs_Device.NT.CoInstallers]
+AddReg=nvidia-fs_Device_CoInstaller_AddReg
+CopyFiles=nvidia-fs_Device_CoInstaller_CopyFiles
+
+[nvidia-fs_Device_CoInstaller_AddReg]
+;
+
+
+[nvidia-fs_Device_CoInstaller_CopyFiles]
+;
+
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="NVIDIA Corporation"
+DiskName = "NVIDIA GDS Installation Disk"
+nvidia-fs.DeviceDesc = "NVIDIA GPUDirect Storage Device"
+nvidia-fs.SVCDESC = "NVIDIA GPUDirect Storage Service"
+
+; Hardware IDs and Compatible IDs
+; Root enumerated device for the control device
+[nvidia-fs_Device.NT.HW]
+AddReg=nvidia-fs_Device_HW_AddReg
+
+[nvidia-fs_Device_HW_AddReg]
+; Device properties
+HKR,,"UpperFilters",0x00010008,"nvidia-fs"
+
+; Registry settings for the driver
+[nvidia-fs_Device.NT.AddReg]
+; Driver parameters (equivalent to Linux module parameters)
+HKR,"Parameters","DebugEnabled",0x00010001,0
+HKR,"Parameters","InfoEnabled",0x00010001,1
+HKR,"Parameters","RwStatsEnabled",0x00010001,0
+HKR,"Parameters","PeerStatsEnabled",0x00010001,0
+HKR,"Parameters","MaxDevices",0x00010001,16
+HKR,"Parameters","UseLegacyP2pAllocation",0x00010001,1
+
+; Performance counters registry keys
+HKR,"Performance",,,"NVIDIA GDS Performance Counters"
+HKR,"Performance","Library",,"nvidia-fs-perf.dll"
+HKR,"Performance","Open",,"NvfsPerfOpen"
+HKR,"Performance","Collect",,"NvfsPerfCollect"
+HKR,"Performance","Close",,"NvfsPerfClose"
+
+; Event log registry keys
+HKR,"EventMessageFile",,"EventMessageFile",0x00020000,"%SystemRoot%\System32\drivers\nvidia-fs.sys"
+HKR,"EventMessageFile","TypesSupported",0x00010001,7
+
+; Driver signing and security
+[nvidia-fs_Device.NT.Security]
+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;WD)(A;;GR;;;RC)"
+
+; Installation requirements
+[nvidia-fs_Device.NT.LogConfigOverride]
+
+; Power management settings
+[nvidia-fs_Device.NT.Interfaces]
+
+; Hardware compatibility
+[ControlFlags]
+; Prevent legacy installations
+ExcludeFromSelect=*
+
+; Uninstall section
+[nvidia-fs_Device.NT.Uninstall]
+DelReg=nvidia-fs_Device_DelReg
+DelFiles=nvidia-fs_Device_DelFiles
+
+[nvidia-fs_Device_DelReg]
+HKR,"Parameters"
+HKR,"Performance"
+HKR,"EventMessageFile"
+
+[nvidia-fs_Device_DelFiles]
+nvidia-fs.sys
+
+; WDF version requirements
+[nvidia-fs_Device.NT.Wdf]
+KmdfService = nvidia-fs, nvidia-fs_wdfsect
+
+[nvidia-fs_wdfsect]
+KmdfLibraryVersion = 1.15
+
+; Installation notes and requirements
+; This driver requires:
+; - Windows 10 version 1903 or later
+; - NVIDIA GPU with compute capability 6.0 or higher
+; - NVIDIA Graphics Driver 418.40 or later
+; - NVMe storage devices or supported network storage
+; - Administrator privileges for installation
+
+; Post-installation registry settings for WMI
+[nvidia-fs_Device.NT.WMI]
+WMIInterface={12345678-1234-5678-9012-123456789ABC},,WMIInterface_Inst
+
+[WMIInterface_Inst]
+; WMI class GUID for performance monitoring and statistics
+WMIInterfaceFlags=0x00000001
+
+; Security descriptor for WMI access
+[nvidia-fs_Device.NT.WMI.Security]
+"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;AU)"
+
+; Localized strings for different languages
+[Strings.0409]  ; English (US)
+ManufacturerName="NVIDIA Corporation"
+DiskName = "NVIDIA GDS Installation Disk"
+nvidia-fs.DeviceDesc = "NVIDIA GPUDirect Storage Device"
+nvidia-fs.SVCDESC = "NVIDIA GPUDirect Storage Service"
+
+[Strings.0407]  ; German
+ManufacturerName="NVIDIA Corporation"
+DiskName = "NVIDIA GDS Installations-Datenträger"
+nvidia-fs.DeviceDesc = "NVIDIA GPUDirect Storage Gerät"
+nvidia-fs.SVCDESC = "NVIDIA GPUDirect Storage Dienst"
+
+[Strings.040C]  ; French
+ManufacturerName="NVIDIA Corporation"
+DiskName = "Disque d'installation NVIDIA GDS"
+nvidia-fs.DeviceDesc = "Périphérique NVIDIA GPUDirect Storage"
+nvidia-fs.SVCDESC = "Service NVIDIA GPUDirect Storage"
+
+[Strings.0411]  ; Japanese
+ManufacturerName="NVIDIA Corporation"
+DiskName = "NVIDIA GDS インストール ディスク"
+nvidia-fs.DeviceDesc = "NVIDIA GPUDirect Storage デバイス"
+nvidia-fs.SVCDESC = "NVIDIA GPUDirect Storage サービス"
+
+[Strings.0804]  ; Chinese (Simplified)
+ManufacturerName="NVIDIA Corporation"
+DiskName = "NVIDIA GDS 安装盘"
+nvidia-fs.DeviceDesc = "NVIDIA GPUDirect Storage 设备"
+nvidia-fs.SVCDESC = "NVIDIA GPUDirect Storage 服务"
