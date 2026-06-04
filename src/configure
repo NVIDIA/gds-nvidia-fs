@@ -22,6 +22,7 @@
 
 rm -rf build
 _KVER=$1
+_KDIR=$2
 TMPDIR1=build
 MAKEFILE="${TMPDIR1}/Makefile"
 TEST_H="${TMPDIR1}/test.h"
@@ -94,7 +95,12 @@ else
 	export KVER=${_KVER}
 fi
 export MODULES_DIR=/lib/modules/$KVER
-export KDIR=$MODULES_DIR/build
+if [ -z "$_KDIR" ]
+then
+	export KDIR=$MODULES_DIR/build
+else
+	export KDIR=${_KDIR}
+fi
 
 cat > $MAKEFILE <<EOF
 obj-m += test.o
