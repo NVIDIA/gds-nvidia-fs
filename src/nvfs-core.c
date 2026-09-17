@@ -590,8 +590,10 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
 
         // get the gpu_index and page offset within the gpu page
 	// for this shadow page
-	nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, page,
-				&gpu_page_index, &pgoff);
+	if (!nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, page,
+				&gpu_page_index, &pgoff)) {
+		goto exit;
+	}
 	nvfsio = &nvfs_mgroup->nvfsio;
 	gpu_info = &nvfs_mgroup->gpu_info;
 
@@ -616,13 +618,16 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
         if (unlikely(gpu_page_index >= dma_mapping->entries)) {
 		pr_err("gpu_page_index :%lu dma_mapping->entries :%u\n",
 				gpu_page_index, dma_mapping->entries);
-		BUG();
+		WARN_ON_ONCE(1);
+		goto exit;
 	}
         dma_base_addr = dma_mapping->dma_addresses[gpu_page_index];
-        BUG_ON(dma_base_addr == 0);
+	if (WARN_ON_ONCE(dma_base_addr == 0))
+		goto exit;
 	// 4K page-level offset
 	// for 64K page we expect pgoff to be 0
-        BUG_ON(pgoff > (GPU_PAGE_SIZE - PAGE_SIZE));
+	if (WARN_ON_ONCE(pgoff > (GPU_PAGE_SIZE - PAGE_SIZE)))
+		goto exit;
         dma_start_addr = dma_base_addr + pgoff;
 
 	#ifdef SIMULATE_BUG_DMA_DISCONTIG
@@ -661,16 +666,18 @@ int nvfs_get_dma(void *device, struct page *page, void **gpu_base_dma, int dma_l
 	 * We may have a SG entry with 64k as segment size, but the DMA addresses for the entire 64k segment
 	 * are not contiguous.
 	 */
-	if ((dma_length > GPU_PAGE_SIZE) && (n_dma_chunks > 1)) {
+	if ((dma_length > (GPU_PAGE_SIZE - pgoff)) && (n_dma_chunks > 1)) {
 		dma_addr_t start_addr = dma_start_addr;
 		int gpu_iter_index = gpu_page_index;
+		size_t bytes_to_next_gpu_page = GPU_PAGE_SIZE - pgoff;
 		size_t sg_length = dma_length;
 
 		while (dma_length > 0) {
-			if (dma_length > GPU_PAGE_SIZE) {
-				dma_length -= GPU_PAGE_SIZE;
-				start_addr += GPU_PAGE_SIZE;
+			if (dma_length > bytes_to_next_gpu_page) {
+				dma_length -= bytes_to_next_gpu_page;
+				start_addr += bytes_to_next_gpu_page;
 				gpu_iter_index += 1;
+				bytes_to_next_gpu_page = GPU_PAGE_SIZE;
 
 				// If this is true, then sg->length isn't right
 				if (gpu_iter_index >= dma_mapping->entries) {
@@ -1061,7 +1068,8 @@ nvfs_direct_io(int op, struct file *filp, char __user *buf,
 
         nvfs_dbg("nvfs_direct_io : ret = %ld len = %lu\n" , ret, len);
         if (ret == -EIOCBQUEUED) {
-                BUG_ON(nvfsio->sync);
+		if (WARN_ON_ONCE(nvfsio->sync))
+			return -EIO;
                 nvfs_dbg("%s queued\n", opstr(op));
         }
         return ret;
@@ -1255,8 +1263,6 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 						struct nvfs_io_mgroup,
 						gpu_info);
 
-	init_waitqueue_head(&gpu_info->callback_wq);
-
 	if(!nvfs_transit_state(gpu_info, true, IO_FREE, IO_INIT)) {
 		nvfs_err("%s:%d gpu_info is in invalid state %d "
 			 "mgroup_ref %d mgroup %p\n",
@@ -1271,23 +1277,8 @@ static int nvfs_pin_gpu_pages(nvfs_ioctl_map_t *input_param,
 		__func__, __LINE__, nvfs_io_state_status(IO_FREE),
 		nvfs_io_state_status(IO_INIT));
 
-	gpu_virt_start  = gpuvaddr & GPU_PAGE_MASK;
-	gpu_virt_end    = gpuvaddr + gpu_buf_len - 1;
-        if(gpu_virt_end < gpu_virt_start) {
-		nvfs_err("invalid gpu buf size provided %lld \n ",
-			 gpu_buf_len);
-		goto error;
-        }
-
-        if(gpu_buf_len < GPU_PAGE_SIZE &&
-		(input_param->sbuf_block * (unsigned long long)NVFS_BLOCK_SIZE) <
-		(gpuvaddr - gpu_virt_start + gpu_buf_len))
-        {
-		nvfs_err("invalid shadow buf size provided %u, gpu_buf_len: %lld, gpuvaddr: %llx \n",
-				input_param->sbuf_block * NVFS_BLOCK_SIZE, gpu_buf_len, gpuvaddr);
-		goto error;
-        }
-
+	gpu_virt_start = gpuvaddr & GPU_PAGE_MASK;
+	gpu_virt_end = gpuvaddr + gpu_buf_len - 1;
 	rounded_size = round_up((gpu_virt_end - gpu_virt_start + 1),
 				GPU_PAGE_SIZE);
 
@@ -1507,11 +1498,37 @@ static int nvfs_map(nvfs_ioctl_map_t *input_param)
 	int ret = -EINVAL;
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
 	struct nvfs_gpu_args *gpu_info;
+	u64 gpu_buf_len;
+	u64 shadow_buf_size;
+	u64 gpu_virt_start;
+	u64 gpu_virt_end;
 
 	nvfs_get_ops();
 
+	gpu_buf_len = input_param->size;
+	shadow_buf_size = (u64)input_param->sbuf_block * NVFS_BLOCK_SIZE;
+	if (gpu_buf_len == 0 || shadow_buf_size == 0) {
+		nvfs_err("%s:%d invalid map request size=%llu sbuf_block=%u\n",
+			 __func__, __LINE__, gpu_buf_len, input_param->sbuf_block);
+		goto error;
+	}
+
+	gpu_virt_start = (u64)input_param->gpuvaddr & GPU_PAGE_MASK;
+	gpu_virt_end = (u64)input_param->gpuvaddr + gpu_buf_len - 1;
+	if (gpu_virt_end < gpu_virt_start) {
+		nvfs_err("invalid gpu buf size provided %llu\n", gpu_buf_len);
+		goto error;
+	}
+
+	if (gpu_buf_len < GPU_PAGE_SIZE &&
+		shadow_buf_size < ((u64)input_param->gpuvaddr - gpu_virt_start + gpu_buf_len)) {
+		nvfs_err("invalid shadow buf size provided %llu, gpu_buf_len: %llu, gpuvaddr: %llx\n",
+			 shadow_buf_size, gpu_buf_len, (u64)input_param->gpuvaddr);
+		goto error;
+	}
+
         nvfs_mgroup = nvfs_mgroup_pin_shadow_pages(input_param->cpuvaddr,
-				input_param->sbuf_block * (unsigned long long)NVFS_BLOCK_SIZE);
+				shadow_buf_size);
 	if (!nvfs_mgroup) {
 		nvfs_err("%s:%d Error nvfs_setup_shadow_buffer\n",
 				__func__, __LINE__);
@@ -1643,7 +1660,8 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 
 	inode = file_inode(file);
 	// we already have a valid fd
-	BUG_ON(inode == NULL);
+	if (WARN_ON_ONCE(inode == NULL))
+		goto fd_put;
 
 	if (file_args->inum) {
 		// for NFS majdev is zero
@@ -1814,13 +1832,17 @@ struct nvfs_io* nvfs_io_init(int op, nvfs_ioctl_ioargs_t *ioargs)
 	// index corresponding to the gpu_page_offset
 	nvfsio->cur_gpu_base_index = va_offset >> GPU_PAGE_SHIFT;
 	init_waitqueue_head(&nvfsio->rw_wq);
-	if (!file_args->devptroff)
-	        BUG_ON(nvfsio->cur_gpu_base_index != 0);
+	if (!file_args->devptroff && WARN_ON_ONCE(nvfsio->cur_gpu_base_index != 0))
+		goto mgroup_put;
 	
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT	
 	//If use_rkey is set, then set the appropriate segments for this IO
 	if(nvfsio->use_rkeys) {
 		shadow_buf_size = nvfs_mgroup->nvfs_blocks_count * NVFS_BLOCK_SIZE;
+		if (shadow_buf_size == 0) {
+			nvfs_err("%s: shadow buffer size is zero\n", __func__);
+			goto mgroup_put;
+		}
 		rdma_seg_offset = va_offset % shadow_buf_size;
 		nvfsio->rdma_seg_offset = rdma_seg_offset;
 		nvfs_dbg("%s: set curr rdma segment offset = %lu\n",
@@ -1967,7 +1989,8 @@ done:
 static inline bool nvfs_need_fallocate(struct inode *inode) {
 	unsigned long magic = inode->i_sb->s_magic;
 	return ((magic != NFS_SUPER_MAGIC) &&  (magic != SCATEFS_SUPER_MAGIC) &&
-		(magic != LUSTRE_SUPER_MAGIC) && (magic != BEEGFS_SUPER_MAGIC));
+		(magic != LUSTRE_SUPER_MAGIC) && (magic != BEEGFS_SUPER_MAGIC) &&
+		(magic != PANFS_SUPER_MAGIC));
 }
 
 long nvfs_io_start_op(nvfs_io_t* nvfsio)
@@ -2045,6 +2068,13 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 #endif
 	
 	nvfs_dbg("%s rdma offset = %lu\n", __func__, rdma_seg_offset);
+	if (rdma_seg_offset < 0 || (u64)rdma_seg_offset > shadow_buf_size) {
+		nvfs_err("%s:%d rdma offset %lu exceeds shadow buffer size %lu\n",
+			 __func__, __LINE__, rdma_seg_offset, shadow_buf_size);
+		ret = -EIO;
+		nvfs_io_free(nvfsio, ret);
+		goto failed;
+	}
 
 	while (bytes_left) {
                 int nr_blocks;
@@ -2061,9 +2091,14 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 			goto failed;
 		}
 
-		bytes_issued = min((long) bytes_left, (long)shadow_buf_size - (long)rdma_seg_offset);
+		bytes_issued = min_t(size_t, bytes_left,
+				     (size_t)(shadow_buf_size - (u64)rdma_seg_offset));
 		//BUG_ON(offset_in_page(bytes_issued));
-		BUG_ON(bytes_issued % NVFS_BLOCK_SIZE);
+		if (WARN_ON_ONCE(bytes_issued % NVFS_BLOCK_SIZE)) {
+			ret = -EIO;
+			nvfs_io_free(nvfsio, ret);
+			goto failed;
+		}
 
 		nr_blocks = DIV_ROUND_UP(bytes_issued, NVFS_BLOCK_SIZE);
                 nvfs_dbg("Num blocks in process address "
@@ -2093,8 +2128,8 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
                 }
 
                 if (f->f_op->read_iter && f->f_op->write_iter) {
-			nvfs_get_ops();
-			ret = nvfs_direct_io(op, f,
+                        nvfs_get_ops();
+                        ret = nvfs_direct_io(op, f,
                                         nvfsio->cpuvaddr,
                                         bytes_issued,
                                         fd_offset,
@@ -2146,7 +2181,11 @@ long nvfs_io_start_op(nvfs_io_t* nvfsio)
 
                         /* update the offset for next batch if bytes_left for sync use case */
                         if(bytes_left) {
-                                BUG_ON(!nvfsio->sync);
+				if (WARN_ON_ONCE(!nvfsio->sync)) {
+					ret = -EIO;
+					nvfs_io_free(nvfsio, ret);
+					goto failed;
+				}
                                 /* advance the gpu offsets */
                                 va_offset =  nvfsio->gpu_page_offset + bytes_issued;
                                 nvfsio->gpu_page_offset = va_offset & (GPU_PAGE_SIZE - 1);
@@ -2554,8 +2593,6 @@ static int __init nvfs_init(void)
 				MKDEV(major_number, i),
 				NULL, DEVICE_NAME"%d", i);
 		if (IS_ERR(nvfs_device[i])) {
-			class_destroy(nvfs_class);
-			unregister_chrdev(major_number, DEVICE_NAME);
 			pr_err("nvidia_fs: Failed to create the device\n");
 			i -= 1;
 			// Cleanup all the previous devices
@@ -2567,15 +2604,18 @@ static int __init nvfs_init(void)
         nvfs_mgroup_init();
 	atomic_set(&nvfs_shutdown, 0);
 	init_waitqueue_head(&wq);
-	nvfs_proc_init();
-#ifdef CONFIG_FAULT_INJECTION
-	nvfs_init_debugfs();
-#endif
-	nvfs_stat_init();
 #ifdef TEST_DISCONTIG_ADDR
 	nvfs_init_simulated_address();
 #endif
 	nvfs_fill_gpu2peer_distance_table_once();
+	if (nvfs_proc_init()) {
+		i = nvfs_curr_devices - 1;
+		goto error;
+	}
+#ifdef CONFIG_FAULT_INJECTION
+	nvfs_init_debugfs();
+#endif
+	nvfs_stat_init();
 
 	return 0;
 
@@ -2584,6 +2624,8 @@ error:
 		device_destroy(nvfs_class, MKDEV(major_number,i));
 		i -= 1;
 	}
+	class_destroy(nvfs_class);
+	unregister_chrdev(major_number, DEVICE_NAME);
 
 	return -1;
 }

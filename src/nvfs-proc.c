@@ -260,7 +260,7 @@ int nvfs_proc_init(void)
 		goto error_entry;
 
 #ifdef CONFIG_NVFS_STATS
-	if (!proc_create("driver/nvidia-fs/stats", S_IFREG | 0444, NULL,
+	if (!proc_create("driver/nvidia-fs/stats", S_IFREG | 0644, NULL,
 		&nvfs_stats_fops)) {
 		goto error_entry;
 	}
