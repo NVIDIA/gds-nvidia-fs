@@ -191,6 +191,18 @@ struct module_entry modules_list[] = {
 	{
 		1,
 		0,
+		NVFS_PROC_MOD_PANFS_KEY,
+		0,
+		"panfs_register_nvfs_dma_ops",
+		0,
+		"panfs_unregister_nvfs_dma_ops",
+		0,
+		&nvfs_dev_dma_rw_ops
+	},
+
+	{
+		1,
+		0,
 		NVFS_PROC_MOD_SCATEFS_KEY,
 		0,
 		"scatefs_register_nvfs_dma_ops",
@@ -454,7 +466,12 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 #else
 		curr_phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, bvec.bv_page);
 #endif
-                nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, bvec.bv_page, &gpu_page_index, &pgoff);
+                if (!nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, bvec.bv_page,
+                                                       &gpu_page_index, &pgoff)) {
+                        CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+                        nvfs_mgroup = NULL;
+                        goto new_segment;
+                }
 		// we no longer need nvfs_mgroup from this point onwards
 		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 		nvfs_mgroup = NULL;
@@ -613,13 +630,41 @@ static int nvfs_validate_gpu_request(struct request *req, nvfs_mgroup_ptr_t nvfs
 	return 0;
 }
 
+static inline bool nvfs_is_p2p_boundary_page(unsigned long gpu_page_index)
+{
+	return gpu_page_index != 0 &&
+		(gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES == 0);
+}
+
+/*
+ * SMMU mappings may stop being IOVA-contiguous at every 4GB - 64K P2P
+ * window. Treat each boundary GPU page as a singleton coalescing group:
+ * multiple smaller bvecs inside that same GPU page can still merge, but
+ * the boundary page must not be merged with either neighboring GPU page.
+ * Non-boundary GPU pages can merge only if they stay within the same
+ * NVFS_P2P_MAX_CONTIG_GPU_PAGES window.
+ */
+static inline bool nvfs_same_p2p_coalesce_group(unsigned long first_gpu_page_index,
+						unsigned long second_gpu_page_index)
+{
+	if (first_gpu_page_index == second_gpu_page_index)
+		return true;
+
+	if (nvfs_is_p2p_boundary_page(first_gpu_page_index) ||
+			nvfs_is_p2p_boundary_page(second_gpu_page_index))
+		return false;
+
+	return (first_gpu_page_index / NVFS_P2P_MAX_CONTIG_GPU_PAGES) ==
+		(second_gpu_page_index / NVFS_P2P_MAX_CONTIG_GPU_PAGES);
+}
+
 /*
  * nvfs_check_page_coalescible - Check if a page can be coalesced with current segment
  * @prev_phys_addr: Previous GPU physical address
  * @curr_phys_addr: Current GPU physical address
  * @gpu_page_index: Current GPU page index
  * @segment_len: Current segment length
- * @bvec_len: Length of bio_vec to add (unused, kept for API consistency)
+ * @bvec_len: Length of bio_vec to add
  *
  * In the 6.17+ iterator-based approach, we let the NVMe driver decide when to stop
  * calling us. We only check GPU-specific constraints: physical contiguity and 4GB boundary.
@@ -628,14 +673,57 @@ static int nvfs_validate_gpu_request(struct request *req, nvfs_mgroup_ptr_t nvfs
  */
 static bool nvfs_check_page_coalescible(uint64_t prev_phys_addr, uint64_t curr_phys_addr,
                                          unsigned long gpu_page_index,
-                                         unsigned int segment_len, unsigned int bvec_len)
+                                         unsigned int segment_len, unsigned int bvec_len, unsigned long prev_gpu_page_index)
 {
+	uint64_t curr_gpu_page_offset = curr_phys_addr & GPU_PAGE_OFFSET;
+	unsigned long curr_last_gpu_page_index;
+
 	/* Check physical contiguity */
-	if((prev_phys_addr + segment_len) != curr_phys_addr)
+	if ((prev_phys_addr + segment_len) != curr_phys_addr) {
+		nvfs_dbg("%s: page not coalescible: non-contiguous phys "
+			  "prev=0x%llx curr=0x%llx expected=0x%llx "
+			  "seg_len=%u bvec_len=%u prev_idx=%lu curr_idx=%lu\n",
+			  __func__, (unsigned long long)prev_phys_addr,
+			  (unsigned long long)curr_phys_addr,
+			  (unsigned long long)(prev_phys_addr + segment_len),
+			  segment_len, bvec_len, prev_gpu_page_index,
+			  gpu_page_index);
 		return false;
-	/* Check 4GB boundary (SMMU IOVA limitation) */
-	if ((gpu_page_index != 0) && (gpu_page_index % NVFS_P2P_MAX_CONTIG_GPU_PAGES == 0))
+	}
+
+	if (unlikely(bvec_len == 0)) {
+		nvfs_dbg("%s: page not coalescible: zero bvec length "
+			  "prev_idx=%lu curr_idx=%lu seg_len=%u\n",
+			  __func__, prev_gpu_page_index, gpu_page_index,
+			  segment_len);
 		return false;
+	}
+
+	curr_last_gpu_page_index = gpu_page_index +
+		((curr_gpu_page_offset + bvec_len - 1) >> GPU_PAGE_SHIFT);
+
+	/*
+	 * Boundary pages are singleton coalescing groups. Normal pages can
+	 * coalesce only within their 4GB - 64K P2P window.
+	 */
+	if (!nvfs_same_p2p_coalesce_group(prev_gpu_page_index, gpu_page_index)) {
+		nvfs_dbg("%s: page not coalescible: P2P boundary between "
+			  "prev_idx=%lu curr_idx=%lu seg_len=%u bvec_len=%u\n",
+			  __func__, prev_gpu_page_index, gpu_page_index,
+			  segment_len, bvec_len);
+		return false;
+	}
+
+	if (!nvfs_same_p2p_coalesce_group(gpu_page_index,
+					  curr_last_gpu_page_index)) {
+		nvfs_dbg("%s: page not coalescible: bvec crosses P2P boundary "
+			  "curr_idx=%lu last_idx=%lu curr_off=0x%llx "
+			  "bvec_len=%u seg_len=%u\n",
+			  __func__, gpu_page_index, curr_last_gpu_page_index,
+			  (unsigned long long)curr_gpu_page_offset, bvec_len,
+			  segment_len);
+		return false;
+	}
 
 	return true;
 }
@@ -708,7 +796,10 @@ static int nvfs_get_gpu_page_info(struct bio_vec *bvec, uint64_t *phys_addr,
 
 	/* Get GPU physical address for tracking contiguity - use actual_page */
 	*phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, actual_page);
-	nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page, gpu_page_index, &pgoff);
+	if (!nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page, gpu_page_index, &pgoff)) {
+		CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+		return NVFS_IO_ERR;
+	}
 	CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 
 	nvfs_dbg("%s: GPU page phys_addr=0x%llx gpu_page_index=%lu pgoff=%lu\n",
@@ -865,7 +956,7 @@ static void nvfs_coalesce_gpu_pages(struct request *req,
 
 		/* Check if we can coalesce this page based on physical address */
 		if (!nvfs_check_page_coalescible(*prev_phys_addr, curr_phys_addr,
-		                                  gpu_page_index, *segment_len, bvec.bv_len)) {
+		                                  gpu_page_index, *segment_len, bvec.bv_len, *prev_gpu_page_index)) {
 			nvfs_dbg("%s: cannot coalesce - prev=0x%llx curr=0x%llx idx=%lu, seg len=%d, bvec len=%d\n",
 				__func__, *prev_phys_addr, curr_phys_addr, gpu_page_index, *segment_len, bvec.bv_len);
 			break;  /* Cannot coalesce, don't advance */
@@ -1041,8 +1132,12 @@ static int nvfs_map_next_gpu_segment(struct request *req,
 
 		/* Get GPU physical address for tracking contiguity - use actual_page! */
 		curr_phys_addr = nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup, actual_page);
-		nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page,
-		                                  &gpu_page_index, &pgoff);
+		if (!nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, actual_page,
+		                                      &gpu_page_index, &pgoff)) {
+			CHECK_AND_PUT_MGROUP(nvfs_mgroup);
+			iter->status = BLK_STS_IOERR;
+			return NVFS_IO_ERR;
+		}
 		/* Adjust pgoff to include the offset within the actual page */
 		pgoff = offset_in_page;
 
@@ -1334,7 +1429,10 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 					__func__, __LINE__, nr_cpu_dma, nr_gpu_dma);
 				goto map_err;
 			}
-			BUG_ON(!(dma_addr_t) gpu_base_dma);
+			if (WARN_ON_ONCE(!(dma_addr_t)gpu_base_dma)) {
+				ret = NVFS_IO_ERR;
+				goto map_err;
+			}
 
 			/*
 			 * We are adding sg->length to the GPU DMA address. In the case of NVMe or any
@@ -1409,8 +1507,8 @@ static int nvfs_dma_unmap_sg(struct device *device,
 	struct scatterlist *sg = NULL;
 	struct page *page;
 
-	if (unlikely(!sglist || (nents < 0)))
-		BUG();
+	if (WARN_ON_ONCE(!sglist || (nents < 0)))
+		return NVFS_IO_ERR;
 
         for_each_sg(sglist, sg, nents, i) {
 		if (unlikely(sg == NULL)) {
@@ -1491,8 +1589,9 @@ static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
 	struct page *page;
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL, prev_mgroup = NULL;
 	int i = 0, nblocks = 0;
-	uint64_t shadow_buf_size, total_size = 0;
+	uint64_t shadow_buf_size, shadow_buf_remaining, rdma_size, total_size = 0;
 	struct nvfs_io* nvfsio = NULL;
+	ssize_t rdma_seg_offset;
 	
 	if(nents <= 0) {
 		
@@ -1543,18 +1642,39 @@ static int nvfs_get_gpu_sglist_rdma_info(struct scatterlist *sglist,
                 // set to the current address by calulating the number of 64K pages + offset
                 rdma_infop->rem_vaddr += (nvfsio->cur_gpu_base_index << GPU_PAGE_SHIFT);
                 rdma_infop->rem_vaddr += (nvfsio->gpu_page_offset);
-		rdma_infop->size = (nvfsio->nvfs_active_blocks_end -
-				nvfsio->nvfs_active_blocks_start + 1) * NVFS_BLOCK_SIZE;
-		if ((int32_t) rdma_infop->size > (shadow_buf_size - nvfsio->rdma_seg_offset) ||
-			(int32_t) rdma_infop->size < 0) {
-			nvfs_err("%s: wrong rdma_infop->size %d shadow buffer size %llu addr = 0x%llx\n \
-					seg_offset = %lu, rkey = %x, mgroup = %p\n",
-					__func__, rdma_infop->size, shadow_buf_size, rdma_infop->rem_vaddr, \
-					nvfsio->rdma_seg_offset, rdma_infop->rkey, prev_mgroup);
+		rdma_seg_offset = nvfsio->rdma_seg_offset;
+		if (rdma_seg_offset < 0 || (uint64_t)rdma_seg_offset > shadow_buf_size) {
+			nvfs_err("%s: wrong rdma_seg_offset=%ld shadow buffer size=%llu addr = 0x%llx\n",
+					__func__, rdma_seg_offset, shadow_buf_size, rdma_infop->rem_vaddr);
 			nvfs_mgroup_put(prev_mgroup);	
 			return NVFS_IO_ERR;
 		}
-		nvfs_dbg("%s: rdma_infop: vaddr = %llx size = %d, offset = %lu rkey = %x\n",
+		if (nvfsio->nvfs_active_blocks_end < nvfsio->nvfs_active_blocks_start) {
+			nvfs_err("%s: invalid active block range start=%lu end=%lu\n",
+					__func__, nvfsio->nvfs_active_blocks_start,
+					nvfsio->nvfs_active_blocks_end);
+			nvfs_mgroup_put(prev_mgroup);
+			return NVFS_IO_ERR;
+		}
+
+		rdma_size = ((uint64_t)nvfsio->nvfs_active_blocks_end -
+				(uint64_t)nvfsio->nvfs_active_blocks_start + 1ULL) * NVFS_BLOCK_SIZE;
+		if (rdma_size > U32_MAX) {
+			nvfs_err("%s: rdma size %llu exceeds descriptor width shadow buffer size %llu addr = 0x%llx\n",
+					__func__, rdma_size, shadow_buf_size, rdma_infop->rem_vaddr);
+			nvfs_mgroup_put(prev_mgroup);
+			return NVFS_IO_ERR;
+		}
+
+		shadow_buf_remaining = shadow_buf_size - (uint64_t)rdma_seg_offset;
+		if (rdma_size > shadow_buf_remaining) {
+			nvfs_err("%s: wrong rdma size %llu shadow buffer remaining %llu addr = 0x%llx\n",
+					__func__, rdma_size, shadow_buf_remaining, rdma_infop->rem_vaddr);
+			nvfs_mgroup_put(prev_mgroup);
+			return NVFS_IO_ERR;
+		}
+		rdma_infop->size = (uint32_t)rdma_size;
+		nvfs_dbg("%s: rdma_infop: vaddr = %llx size = %u, offset = %lu rkey = %x\n",
 				__func__,
 				rdma_infop->rem_vaddr,
 				rdma_infop->size,

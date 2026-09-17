@@ -56,6 +56,17 @@
 #define nvfs_page_flags(page) ((page)->flags)
 #endif
 
+static inline bool nvfs_mmap_access_ok(u64 cpuvaddr, size_t length)
+{
+#ifdef HAVE_ACCESS_OK_3_PARAMS
+	return access_ok(VERIFY_WRITE, (void __user *)(unsigned long)cpuvaddr,
+			 length);
+#endif
+#ifdef HAVE_ACCESS_OK_2_PARAMS
+	return access_ok((void __user *)(unsigned long)cpuvaddr, length);
+#endif
+	return false;
+}
 
 static DEFINE_HASHTABLE(nvfs_io_mgroup_hash, NVFS_MAX_SHADOW_ALLOCS_ORDER);
 static spinlock_t lock ____cacheline_aligned;
@@ -250,6 +261,11 @@ static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
                                 __func__, __LINE__);
                 goto out;
         }
+	if (!nvfs_mmap_access_ok(cpuvaddr, PAGE_SIZE)) {
+		nvfs_err("%s:%d invalid VA range %llx length %lu\n",
+				__func__, __LINE__, cpuvaddr, PAGE_SIZE);
+		goto out;
+	}
 #ifdef HAVE_PIN_USER_PAGES_FAST
 	ret = pin_user_pages_fast(cpuvaddr, 1, 1, &page);
 #else
@@ -356,6 +372,7 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 	int ret = 0;
 	struct page** pages = NULL;
         unsigned long count, block_count, j, cur_base_index = 0;
+        unsigned long pinned = 0;
         nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
 
 	if (!cpuvaddr) {
@@ -376,6 +393,17 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 
 	count = DIV_ROUND_UP(length, PAGE_SIZE);
 	block_count = DIV_ROUND_UP(length, NVFS_BLOCK_SIZE);
+	if (count == 0 || count > NVFS_MAX_SHADOW_PAGES) {
+		nvfs_err("%s:%d invalid shadow page count %lu for addr %llx length %lu\n",
+				__func__, __LINE__, count, cpuvaddr, length);
+		goto out;
+	}
+	if (!nvfs_mmap_access_ok(cpuvaddr, count * PAGE_SIZE)) {
+		nvfs_err("%s:%d invalid VA range %llx length %lu\n",
+				__func__, __LINE__, cpuvaddr,
+				count * PAGE_SIZE);
+		goto out;
+	}
 	pages = (struct page **) kmalloc(count * sizeof(struct page *), GFP_KERNEL);
 	if (!pages) {
 		nvfs_err("%s:%d shadow buffer pages allocation failed\n",
@@ -399,13 +427,14 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 	}
 
         // fail if the number of pages pinned is not equal to requested count
-	if(ret != count || count > NVFS_MAX_SHADOW_PAGES) {
+	if(ret != count) {
 		nvfs_err("%s:%d Unable to pin shadow buffer pages %ld ret= %d\n",
 					__func__, __LINE__, count, ret);
-		goto failed;
+		goto failed_pin;
 	} else {
 	        nvfs_dbg("Pinned Addr: %llx %ld pages for process id %d \n",
                          cpuvaddr, count, current->pid);
+                pinned = count;
         }
 
 	for (j = 0; j < count; j++) {
@@ -413,23 +442,38 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
                 if(pages[j]->mapping != NULL) {
 	                nvfs_err("Page: %p page->mapping: %p page->flags: %lx \n",
 				pages[j], pages[j]->mapping, nvfs_page_flags(pages[j]));
-                        goto out;
+                        ret = j;
+                        goto failed_pinned;
                 }
                 cur_base_index = (NVFS_PAGE_INDEX(pages[j]) >> NVFS_MAX_SHADOW_PAGES_ORDER);
 		if(j == 0) {
 			nvfs_mgroup = nvfs_mgroup_get(cur_base_index);
-			if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup)))
-				goto out;
+			if(nvfs_mgroup == NULL || unlikely(IS_ERR(nvfs_mgroup))) {
+				ret = j;
+				goto failed_pinned;
+			}
 
 			if ((nvfs_mgroup->nvfs_blocks_count != block_count)) {
 				nvfs_dbg("Mgroup Block count: %lu, block count:%lu\n", nvfs_mgroup->nvfs_blocks_count, block_count);
 				nvfs_dbg("Mgroup page: %p, page:%p\n", nvfs_mgroup->nvfs_ppages[j], pages[j]);
-				BUG_ON(nvfs_mgroup->nvfs_blocks_count < block_count);
+				if (WARN_ON_ONCE(nvfs_mgroup->nvfs_blocks_count < block_count)) {
+					ret = j;
+					goto failed_pinned;
+				}
 			}
 		}
-                BUG_ON((nvfs_mgroup->base_index != cur_base_index));
-                BUG_ON(j != (NVFS_PAGE_INDEX(pages[j]) % NVFS_MAX_SHADOW_PAGES));
-                BUG_ON((nvfs_mgroup->nvfs_ppages[j] != pages[j]));
+		if (WARN_ON_ONCE(nvfs_mgroup->base_index != cur_base_index)) {
+			ret = j;
+			goto failed_pinned;
+		}
+		if (WARN_ON_ONCE(j != (NVFS_PAGE_INDEX(pages[j]) % NVFS_MAX_SHADOW_PAGES))) {
+			ret = j;
+			goto failed_pinned;
+		}
+		if (WARN_ON_ONCE(nvfs_mgroup->nvfs_ppages[j] != pages[j])) {
+			ret = j;
+			goto failed_pinned;
+		}
 
 	        nvfs_dbg("Page: %lx , nvfs_mgroup: %p, base_index: %lx page-index: %lx page->flags: %lx \n",
                    (unsigned long)pages[j], nvfs_mgroup, cur_base_index,
@@ -442,14 +486,31 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 #endif
 	}
 
-        BUG_ON(nvfs_mgroup->nvfs_ppages == NULL);
+	if (WARN_ON_ONCE(nvfs_mgroup->nvfs_ppages == NULL)) {
+		ret = pinned;
+		goto failed_pinned;
+	}
 	nvfs_mgroup->cpu_base_vaddr = cpuvaddr;
         nvfs_mgroup_check_and_set(nvfs_mgroup, NVFS_IO_INIT, true, false);
-        kfree(pages);
+	kfree(pages);
 	return nvfs_mgroup;
 
-failed:
-	if ((ret > 0) && (ret != count)) {
+failed_pinned:
+	if (pinned && ret < pinned) {
+		for (j = ret; j < pinned; j++) {
+#ifdef HAVE_PIN_USER_PAGES_FAST
+			unpin_user_page(pages[j]);
+#else
+			put_page(pages[j]);
+#endif
+		}
+	}
+	if (nvfs_mgroup && !IS_ERR(nvfs_mgroup))
+		nvfs_mgroup_put(nvfs_mgroup);
+	goto out;
+
+failed_pin:
+	if (ret > 0) {
 		for (j = 0; j < ret; j++) {
 #ifdef HAVE_PIN_USER_PAGES_FAST
 			unpin_user_page(pages[j]);
@@ -577,11 +638,14 @@ done:
 		//nvfs_mgroup_check_and_set(nvfs_mgroup, NVFS_IO_FREE, true, false);
 
 		// ref from mmap()
-		BUG_ON(nvfs_mgroup == NULL);
-		BUG_ON(atomic_read(&nvfs_mgroup->ref) < 1);
-                nvfs_mgroup_put(nvfs_mgroup);
+		if (WARN_ON_ONCE(nvfs_mgroup == NULL))
+			goto clear_vma;
+		if (WARN_ON_ONCE(atomic_read(&nvfs_mgroup->ref) < 1))
+			goto clear_vma;
+	        nvfs_mgroup_put(nvfs_mgroup);
 		nvfs_stat64_sub(length, &nvfs_n_active_shadow_buf_sz);
-                vma->vm_private_data = NULL;
+clear_vma:
+	        vma->vm_private_data = NULL;
 		nvfs_stat64(&nvfs_n_munmap);
         }
 }
@@ -690,6 +754,8 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 		ret = -ENOMEM;
         	goto error;
         }
+	gpu_info = &nvfs_new_mgroup->gpu_info;
+	init_waitqueue_head(&gpu_info->callback_wq);
 
         /* allocate a base index for the group starting from NVFS_MIN_BASE_INDEX
          * to next 2^32 entries. prandom_u32 makes sure the hash table collisions
@@ -841,11 +907,11 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 	bool update_nvfsio)
 {
         struct nvfs_io_metadata  *nvfs_mpages = nvfs_mgroup->nvfs_metadata;
-        nvfs_io_sparse_dptr_t sparse_ptr = NULL;
-        int last_sparse_index = -1;
-        struct nvfs_io* nvfsio = &nvfs_mgroup->nvfsio;
-        unsigned done_blocks = DIV_ROUND_UP(nvfsio->ret, NVFS_BLOCK_SIZE);
-        unsigned issued_blocks = (nvfsio->nvfs_active_blocks_end - nvfsio->nvfs_active_blocks_start + 1);
+	nvfs_io_sparse_dptr_t sparse_ptr = NULL;
+	int last_sparse_index = -1;
+	struct nvfs_io* nvfsio = &nvfs_mgroup->nvfsio;
+	unsigned issued_blocks = (nvfsio->nvfs_active_blocks_end - nvfsio->nvfs_active_blocks_start + 1);
+	unsigned done_blocks = 0;
         int i, nholes = -1;
         int  last_done_block = 0; // needs to be int to handle 0 bytes done.
         int sparse_read_bytes_limit = 0; // set only if we reach max hole regions
@@ -854,8 +920,11 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 	int last_block_num = nvfsio->nvfs_active_blocks_end;
 
 	if (validate && (state == NVFS_IO_DONE)) {
-		BUG_ON(nvfsio->ret < 0);
-		BUG_ON(nvfsio->ret > nvfsio->length);
+		if (WARN_ON_ONCE(nvfsio->ret < 0 || nvfsio->ret > nvfsio->length)) {
+			nvfsio->ret = -EIO;
+			return;
+		}
+		done_blocks = DIV_ROUND_UP(nvfsio->ret, NVFS_BLOCK_SIZE);
 
 		/* setup sparse metadata structure */
 		if(nvfsio->op == READ && nvfsio->check_sparse == true)  {
@@ -905,37 +974,47 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 						ret = -EIO;
 						WARN_ON_ONCE(1);
 					}
-				// This block was not issued to block layer and the file is not sparse, BUG
-				} else {
-					if (nvfsio->op == READ) {
-						// handle fallocate case with unwritten extents
-						if (sparse_ptr == false) {
-							BUG_ON(nvfsio->check_sparse == true);
-							nvfsio->check_sparse = true;
-							sparse_ptr = nvfs_io_map_sparse_data(nvfs_mgroup);
-						}
-						// holes
-						if(last_sparse_index < 0 || (last_sparse_index + 1) != i) {
-							if (sparse_read_bytes_limit) {
-								last_sparse_index = i;
-							// we stop further hole processing, and record the current block index for
-							// mimicking a partial read to nvfs_io_complete
-							} else if (nholes + 1 >= NVFS_MAX_HOLE_REGIONS) {
-								sparse_read_bytes_limit = (i - nvfsio->nvfs_active_blocks_start) * NVFS_BLOCK_SIZE;
-								last_sparse_index = i;
-								nvfs_info("detected max hole region count: %u", nholes);
-								nvfs_info("sparse read current BLOCK index: %u, read_bytes: %d", i,
-									sparse_read_bytes_limit);
-							} else {
-							// start a new sparse region
-								nholes++;
-								BUG_ON(nholes >= NVFS_MAX_HOLE_REGIONS);
-								sparse_ptr->hole[nholes].start = i - nvfsio->nvfs_active_blocks_start;
-								sparse_ptr->hole[nholes].npages = 1;
-								last_sparse_index = i;
+					// This block was not issued to block layer and the file is not sparse, BUG
+					} else {
+						if (nvfsio->op == READ) {
+							// handle fallocate case with unwritten extents
+							if (sparse_ptr == false) {
+								if (WARN_ON_ONCE(nvfsio->check_sparse == true)) {
+									ret = -EIO;
+									continue;
+								}
+								nvfsio->check_sparse = true;
+								sparse_ptr = nvfs_io_map_sparse_data(nvfs_mgroup);
+								if (WARN_ON_ONCE(!sparse_ptr)) {
+									ret = -EIO;
+									continue;
+								}
 							}
-						} else {
-							sparse_ptr->hole[nholes].npages++;
+							// holes
+							if(last_sparse_index < 0 || (last_sparse_index + 1) != i) {
+								if (sparse_read_bytes_limit) {
+									last_sparse_index = i;
+								// we stop further hole processing, and record the current block index for
+								// mimicking a partial read to nvfs_io_complete
+								} else if (nholes + 1 >= NVFS_MAX_HOLE_REGIONS) {
+									sparse_read_bytes_limit = (i - nvfsio->nvfs_active_blocks_start) * NVFS_BLOCK_SIZE;
+									last_sparse_index = i;
+									nvfs_info("detected max hole region count: %u", nholes);
+									nvfs_info("sparse read current BLOCK index: %u, read_bytes: %d", i,
+										sparse_read_bytes_limit);
+								} else {
+									// start a new sparse region
+									nholes++;
+									if (WARN_ON_ONCE(nholes >= NVFS_MAX_HOLE_REGIONS)) {
+										ret = -EIO;
+										continue;
+									}
+									sparse_ptr->hole[nholes].start = i - nvfsio->nvfs_active_blocks_start;
+									sparse_ptr->hole[nholes].npages = 1;
+									last_sparse_index = i;
+								}
+							} else {
+								sparse_ptr->hole[nholes].npages++;
 							last_sparse_index = i;
 						}
 					} else {
@@ -948,10 +1027,11 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 			}
 		} else if(state == NVFS_IO_DONE &&
 				(i > nvfsio->nvfs_active_blocks_end || i < nvfsio->nvfs_active_blocks_start)) {
-			if (validate && nvfs_mpages[i].nvfs_state != NVFS_IO_INIT) {
-				// We shouldn't be seeing a page which are out of bounds
-				BUG_ON(1);
-			}
+				if (validate && nvfs_mpages[i].nvfs_state != NVFS_IO_INIT) {
+					// We shouldn't be seeing a page which are out of bounds
+					WARN_ON_ONCE(1);
+					ret = -EIO;
+				}
 			// don't update the state to DONE.
 			continue;
 		} else {
@@ -1010,16 +1090,21 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 		nvfsio->ret = sparse_read_bytes_limit;
 }
 
-static void nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvfs_mdata, nvfs_io_t *nvfsio)
+static int nvfs_mgroup_fill_mpage(struct page* page, nvfs_mgroup_page_ptr_t nvfs_mdata, nvfs_io_t *nvfsio)
 {
-        BUG_ON(!page);
-	BUG_ON(nvfs_mdata->nvfs_start_magic != NVFS_START_MAGIC);
-	BUG_ON(nvfs_mdata->nvfs_state != NVFS_IO_INIT && nvfs_mdata->nvfs_state != NVFS_IO_DONE);
-	BUG_ON(nvfs_mdata->page != page);
+	if (WARN_ON_ONCE(!page))
+		return -EIO;
+	if (WARN_ON_ONCE(nvfs_mdata->nvfs_start_magic != NVFS_START_MAGIC))
+		return -EIO;
+	if (WARN_ON_ONCE(nvfs_mdata->nvfs_state != NVFS_IO_INIT && nvfs_mdata->nvfs_state != NVFS_IO_DONE))
+		return -EIO;
+	if (WARN_ON_ONCE(nvfs_mdata->page != page))
+		return -EIO;
 
         nvfs_mdata->nvfs_state = NVFS_IO_QUEUED;
         nvfs_dbg("page %p page->mapping: %lx, page->flags: %lx\n",
                           page, (unsigned long)page->mapping, nvfs_page_flags(page));
+	return 0;
 }
 
 
@@ -1054,11 +1139,12 @@ int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_blocks)
                 }
         }
 
-        nvfsio->nvfs_active_blocks_start = blockoff;
-        for (j = blockoff; j < nr_blocks + blockoff; ++j) {
-                nvfs_mgroup_fill_mpage(nvfs_mgroup->nvfs_ppages[j/nvfs_block_count_per_page],
-			&nvfs_mgroup->nvfs_metadata[j], nvfsio);
-        }
+	nvfsio->nvfs_active_blocks_start = blockoff;
+	for (j = blockoff; j < nr_blocks + blockoff; ++j) {
+		if (nvfs_mgroup_fill_mpage(nvfs_mgroup->nvfs_ppages[j/nvfs_block_count_per_page],
+			&nvfs_mgroup->nvfs_metadata[j], nvfsio) < 0)
+			return -EIO;
+	}
         nvfsio->nvfs_active_blocks_end = (j > 0 ? j-1 : 0);
 
         // clear the state for unqueued pages
@@ -1076,12 +1162,26 @@ int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_blocks)
 
 // eg: page->index relative to base_index (16 + 1) will return 1, 4K
 // eg: page->index relative to base_index (32 + 2) will return 2, 8K
-void nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup_ptr_t nvfs_mgroup, struct page* page, unsigned long *gpu_index, pgoff_t *offset)
+bool nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup_ptr_t nvfs_mgroup, struct page* page, unsigned long *gpu_index, pgoff_t *offset)
 {
-  unsigned long rel_page_index = (NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES);
+  unsigned long rel_page_index;
+  unsigned long pages_per_gpu_page;
+
+  if (!nvfs_mgroup || !page || !gpu_index || !offset || !nvfs_mgroup->gpu_info.page_table) {
+	return false;
+  }
+
+  rel_page_index = (NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES);
+  pages_per_gpu_page = (unsigned long)(GPU_PAGE_SIZE / PAGE_SIZE);
   *gpu_index = nvfs_mgroup->nvfsio.cur_gpu_base_index + (rel_page_index >> PAGE_PER_GPU_PAGE_SHIFT);
+  if (*gpu_index >= nvfs_mgroup->gpu_info.page_table->entries) {
+	return false;
+  }
   if (PAGE_SIZE < GPU_PAGE_SIZE)
-	*offset = (rel_page_index % GPU_PAGE_SHIFT) << PAGE_SHIFT;
+	*offset = (rel_page_index % pages_per_gpu_page) << PAGE_SHIFT;
+  else
+	*offset = 0;
+  return true;
 }
 
 uint64_t nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup_ptr_t nvfs_mgroup, struct page* page)
@@ -1091,8 +1191,10 @@ uint64_t nvfs_mgroup_get_gpu_physical_address(nvfs_mgroup_ptr_t nvfs_mgroup, str
 	pgoff_t pgoff = 0;
 	dma_addr_t phys_base_addr, phys_start_addr;
 
-	nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, page,
-			&gpu_page_index, &pgoff);
+	if (!nvfs_mgroup_get_gpu_index_and_off(nvfs_mgroup, page,
+			&gpu_page_index, &pgoff)) {
+		return 0;
+	}
 	phys_base_addr = gpu_info->page_table->pages[gpu_page_index]->physical_address;
 	phys_start_addr = phys_base_addr + pgoff;
 
@@ -1263,6 +1365,12 @@ int nvfs_mgroup_metadata_set_dma_state(struct page* page,
 	end_block = METADATA_BLOCK_END_INDEX(bv_offset, bv_len);
 	block_idx = (NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES) * nvfs_block_count_per_page;
 
+	if (block_idx + end_block >= nvfs_mgroup->nvfs_blocks_count) {
+		nvfs_err("%s: metadata index out of bounds: base=%d end=%u blocks=%lu\n",
+			 __func__, block_idx, end_block, nvfs_mgroup->nvfs_blocks_count);
+		return -EIO;
+	}
+
 	// For each
 	for (i = block_idx + start_block; i <= block_idx + end_block; i++) {
 		nvfs_mpage = &nvfs_mgroup->nvfs_metadata[i];
@@ -1304,7 +1412,14 @@ nvfs_mgroup_ptr_t nvfs_mgroup_from_page(struct page* page)
 		return ERR_PTR(-EIO);
 
 	if (PAGE_SIZE < GPU_PAGE_SIZE) {
-		nvfs_mpage = &nvfs_mgroup->nvfs_metadata[NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES];
+		unsigned long metadata_index = NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES;
+		if (metadata_index >= nvfs_mgroup->nvfs_blocks_count) {
+			nvfs_err("%s: metadata index out of bounds: %lu blocks=%lu\n",
+				 __func__, metadata_index, nvfs_mgroup->nvfs_blocks_count);
+			nvfs_mgroup_put(nvfs_mgroup);
+			return ERR_PTR(-EIO);
+		}
+		nvfs_mpage = &nvfs_mgroup->nvfs_metadata[metadata_index];
 		if(nvfs_mpage->nvfs_state != NVFS_IO_QUEUED &&
 				nvfs_mpage->nvfs_state != NVFS_IO_DMA_START)
 		{

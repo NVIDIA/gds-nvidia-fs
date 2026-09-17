@@ -264,7 +264,7 @@ static u32 nvfs_pcie_bw_available(struct pci_dev *pdev,
     int ret;
     u16 lnksta = 0;
     u8 lnk_speed_idx;
-	enum pci_bus_speed lnk_speed;
+	enum pci_bus_speed lnk_speed = PCI_SPEED_UNKNOWN;
 	enum pcie_link_width lnk_width;
 
 	ret = pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &lnksta);
@@ -284,6 +284,7 @@ static u32 nvfs_pcie_bw_available(struct pci_dev *pdev,
                  PCI_FUNC(pdev->devfn), lnk_width, lnk_speed_idx, bw);
     } else {
         bw = 0;
+        lnk_speed = PCI_SPEED_UNKNOWN;
         nvfs_warn("cannot determine bw, unexpected link_speed value for device"
                  "%04x:%02x:%02x:%d\n", pci_domain_nr(pdev->bus),
                  pdev->bus->number, PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));

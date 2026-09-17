@@ -1,3 +1,6 @@
+nvidia-fs (2.30.2) RELEASE; urgency=low
+  * Add support for PANFS
+  * Minor bug fixes
 nvidia-fs (2.29.4) RELEASE; urgency=low
   * Fix modpost warnings
   * Compilation fixes for 7.0 kernel

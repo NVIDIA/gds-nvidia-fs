@@ -309,75 +309,6 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 	return 0;
 }
 
-/*
- * Description: resets any cumulative counters including errors;
- *              self managed counters are not reset
- * 
- */
-static int nvfs_stats_reset(void) {
-
-	nvfs_stat64_reset(&nvfs_n_reads);
-	nvfs_stat64_reset(&nvfs_n_reads_ok);
-	nvfs_stat_reset(&nvfs_n_read_err);
-	nvfs_stat64_reset(&nvfs_n_read_bytes);
-	nvfs_stat_reset(&nvfs_n_read_iostate_err);
-
-	nvfs_stat_reset(&nvfs_read_throughput);
-	nvfs_stat_reset(&nvfs_avg_read_latency);
-
-	nvfs_stat64_reset(&nvfs_n_reads_sparse_files);
-	nvfs_stat64_reset(&nvfs_n_reads_sparse_io);
-	nvfs_stat64_reset(&nvfs_n_reads_sparse_region);
-	nvfs_stat64_reset(&nvfs_n_reads_sparse_pages);
-
-	nvfs_stat64_reset(&nvfs_n_writes);
-	nvfs_stat64_reset(&nvfs_n_writes_ok);
-	nvfs_stat_reset(&nvfs_n_write_err);
-	nvfs_stat64_reset(&nvfs_n_write_bytes);
-	nvfs_stat_reset(&nvfs_n_write_iostate_err);
-
-	nvfs_stat_reset(&nvfs_write_throughput);
-	nvfs_stat_reset(&nvfs_avg_write_latency);
-
-	nvfs_stat64_reset(&nvfs_n_mmap);
-	nvfs_stat64_reset(&nvfs_n_mmap_ok);
-	nvfs_stat64_reset(&nvfs_n_munmap);
-
-	nvfs_stat_reset(&nvfs_n_mmap_err);
-	nvfs_stat_reset(&nvfs_n_err_mix_cpu_gpu);
-	nvfs_stat_reset(&nvfs_n_err_sg_err);
-	nvfs_stat_reset(&nvfs_n_err_dma_map);
-	nvfs_stat_reset(&nvfs_n_err_dma_ref);
-
-	nvfs_stat64_reset(&nvfs_n_maps);
-	nvfs_stat64_reset(&nvfs_n_maps_ok);
-	nvfs_stat_reset(&nvfs_n_map_err);
-	nvfs_stat64_reset(&nvfs_n_free);
-	nvfs_stat_reset(&nvfs_n_callbacks);
-	nvfs_stat64_reset(&nvfs_n_delayed_frees);
-
-	nvfs_stat64_reset(&nvfs_n_batches);
-	nvfs_stat64_reset(&nvfs_n_batches_ok);
-	nvfs_stat_reset(&nvfs_n_batch_err);
-	nvfs_stat_reset(&nvfs_batch_submit_avg_latency);
-	nvfs_stat_reset(&nvfs_batch_ops_per_sec);
-	nvfs_stat_reset(&nvfs_n_op_batches);
-
-	nvfs_stat_reset(&nvfs_read_ops_per_sec);
-	nvfs_stat_reset(&nvfs_write_ops_per_sec);
-
-	nvfs_stat64_reset(&nvfs_read_latency_per_sec);
-	nvfs_stat64_reset(&nvfs_write_latency_per_sec);
-
-	nvfs_stat_reset(&nvfs_n_pg_cache);
-	nvfs_stat_reset(&nvfs_n_pg_cache_fail);
-	nvfs_stat_reset(&nvfs_n_pg_cache_eio);
-
-        nvfs_reset_gpuinfo_stats();
-	nvfs_reset_peer_affinity_stats();
-	return 0;
-}
-
 static struct nvfs_gpu_stat *nvfs_get_gpustat_unlocked(uint64_t gpu_uuid_hash)
 {
 	struct nvfs_gpu_stat *gpustat;
@@ -404,7 +335,8 @@ void nvfs_update_free_gpustat(struct nvfs_gpu_args *gpuinfo) {
 	gpustat = nvfs_get_gpustat_unlocked(gpu_uuid_hash);
 	rcu_read_unlock();
 
-	BUG_ON(gpustat == NULL);
+	if (WARN_ON_ONCE(gpustat == NULL))
+		return;
 
 	if (gpuinfo->is_bounce_buffer) {
 		nvfs_stat64_sub(gpuinfo->gpu_buf_len, &(gpustat->active_bounce_buffer_memory));
@@ -621,6 +553,75 @@ void nvfs_stat_destroy() {
 static int nvfs_stats_open(struct inode *inode, struct file *file)
 {
         return single_open(file, nvfs_stats_show, NULL);
+}
+
+/*
+ * Description: resets any cumulative counters including errors;
+ *              self managed counters are not reset
+ *
+ */
+static int nvfs_stats_reset(void)
+{
+	nvfs_stat64_reset(&nvfs_n_reads);
+	nvfs_stat64_reset(&nvfs_n_reads_ok);
+	nvfs_stat_reset(&nvfs_n_read_err);
+	nvfs_stat64_reset(&nvfs_n_read_bytes);
+	nvfs_stat_reset(&nvfs_n_read_iostate_err);
+
+	nvfs_stat_reset(&nvfs_read_throughput);
+	nvfs_stat_reset(&nvfs_avg_read_latency);
+
+	nvfs_stat64_reset(&nvfs_n_reads_sparse_files);
+	nvfs_stat64_reset(&nvfs_n_reads_sparse_io);
+	nvfs_stat64_reset(&nvfs_n_reads_sparse_region);
+	nvfs_stat64_reset(&nvfs_n_reads_sparse_pages);
+
+	nvfs_stat64_reset(&nvfs_n_writes);
+	nvfs_stat64_reset(&nvfs_n_writes_ok);
+	nvfs_stat_reset(&nvfs_n_write_err);
+	nvfs_stat64_reset(&nvfs_n_write_bytes);
+	nvfs_stat_reset(&nvfs_n_write_iostate_err);
+
+	nvfs_stat_reset(&nvfs_write_throughput);
+	nvfs_stat_reset(&nvfs_avg_write_latency);
+
+	nvfs_stat64_reset(&nvfs_n_mmap);
+	nvfs_stat64_reset(&nvfs_n_mmap_ok);
+	nvfs_stat64_reset(&nvfs_n_munmap);
+
+	nvfs_stat_reset(&nvfs_n_mmap_err);
+	nvfs_stat_reset(&nvfs_n_err_mix_cpu_gpu);
+	nvfs_stat_reset(&nvfs_n_err_sg_err);
+	nvfs_stat_reset(&nvfs_n_err_dma_map);
+	nvfs_stat_reset(&nvfs_n_err_dma_ref);
+
+	nvfs_stat64_reset(&nvfs_n_maps);
+	nvfs_stat64_reset(&nvfs_n_maps_ok);
+	nvfs_stat_reset(&nvfs_n_map_err);
+	nvfs_stat64_reset(&nvfs_n_free);
+	nvfs_stat_reset(&nvfs_n_callbacks);
+	nvfs_stat64_reset(&nvfs_n_delayed_frees);
+
+	nvfs_stat64_reset(&nvfs_n_batches);
+	nvfs_stat64_reset(&nvfs_n_batches_ok);
+	nvfs_stat_reset(&nvfs_n_batch_err);
+	nvfs_stat_reset(&nvfs_batch_submit_avg_latency);
+	nvfs_stat_reset(&nvfs_batch_ops_per_sec);
+	nvfs_stat_reset(&nvfs_n_op_batches);
+
+	nvfs_stat_reset(&nvfs_read_ops_per_sec);
+	nvfs_stat_reset(&nvfs_write_ops_per_sec);
+
+	nvfs_stat64_reset(&nvfs_read_latency_per_sec);
+	nvfs_stat64_reset(&nvfs_write_latency_per_sec);
+
+	nvfs_stat_reset(&nvfs_n_pg_cache);
+	nvfs_stat_reset(&nvfs_n_pg_cache_fail);
+	nvfs_stat_reset(&nvfs_n_pg_cache_eio);
+
+        nvfs_reset_gpuinfo_stats();
+	nvfs_reset_peer_affinity_stats();
+	return 0;
 }
 
 /*

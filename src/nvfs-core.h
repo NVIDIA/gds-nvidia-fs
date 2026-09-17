@@ -250,6 +250,7 @@ void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 #define LUSTRE_SUPER_MAGIC 0x0bd00bd0U
 #define BEEGFS_SUPER_MAGIC  0x19830326U
 #define SCATEFS_SUPER_MAGIC 0x53544653
+#define PANFS_SUPER_MAGIC 0xAAD7AAEAU
 #define NVFS_MAY_SLEEP()                  (!irqs_disabled() && !in_interrupt() && !in_atomic() && !in_nmi())
 
 static inline unsigned int get_major(struct inode *inode) {

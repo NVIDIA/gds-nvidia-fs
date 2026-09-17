@@ -69,6 +69,7 @@
 #define NVFS_PROC_MOD_NFS_KEY           "rpcrdma"
 #define NVFS_PROC_MOD_WEKAFS_KEY        "wekafsio"
 #define NVFS_PROC_MOD_SCATEFS_KEY       "scatefs"
+#define NVFS_PROC_MOD_PANFS_KEY         "panfs"
 
 
 struct nvfs_dma_rw_ops {
