@@ -63,6 +63,8 @@
 // device classes probed by nvidia-fs for generating pci-distance matrix
 #define PCI_CLASS_NETWORK_INFINIBAND 0x207
 
+#define PCI_CLASS_NETWORK_HOST_FABRIC 0x208
+
 #define PCI_DEV_GPU(class, vendor) \
 	(((vendor) == PCI_VENDOR_ID_NVIDIA) && \
 	 (((class) == PCI_CLASS_DISPLAY_VGA) || \
@@ -71,6 +73,9 @@
 #define PCI_DEV_IB(class) \
 	((((class) == PCI_CLASS_NETWORK_ETHERNET) || \
 	  (((class) == PCI_CLASS_NETWORK_INFINIBAND))))
+
+#define PCI_DEV_HF(class) \
+	((class) == PCI_CLASS_NETWORK_HOST_FABRIC)
 
 #define PCI_DEV_NVME(class) \
 	((class) == PCI_CLASS_STORAGE_EXPRESS)
@@ -132,7 +137,7 @@ static inline bool nvfs_pdevinfo_get_acs(uint64_t pdevinfo) {
 
 // embed class info to pdevinfo
 static inline void nvfs_pdevinfo_set_class(uint64_t *pdevinfo, unsigned int dev_class) {
-	if (PCI_DEV_IB(dev_class >> 8))
+	if (PCI_DEV_IB(dev_class >> 8) || PCI_DEV_HF(dev_class >> 8))
 		*pdevinfo |= (1ULL << NVFS_PDEVINFO_NET_CHECK_BIT);
 	else if (PCI_DEV_NVME(dev_class))
 		*pdevinfo |= (1ULL << NVFS_PDEVINFO_NVME_CHECK_BIT);
