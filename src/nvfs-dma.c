@@ -41,6 +41,34 @@
 
 //#define TEST_RQ_MIXED
 
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
+/*
+ * Older blk-mq can recursively flush the same plug if NVFS sleeps during
+ * NVMe submission. Hide the plug only on those kernels. If PF_BLOCK_TS
+ * exists, invalidate the cached timestamp first so the scheduler never
+ * observes PF_BLOCK_TS with current->plug NULL.
+ */
+static inline struct blk_plug *nvfs_hide_current_plug(void)
+{
+	struct blk_plug *plug = current->plug;
+
+#ifdef HAVE_PF_BLOCK_TS
+	if (current->flags & PF_BLOCK_TS) {
+		if (plug)
+			plug->cur_ktime = 0;
+		current->flags &= ~PF_BLOCK_TS;
+	}
+#endif
+	current->plug = NULL;
+	return plug;
+}
+
+static inline void nvfs_restore_current_plug(struct blk_plug *plug)
+{
+	current->plug = plug;
+}
+#endif
+
 #define CHECK_AND_PUT_MGROUP(nvfs_mgroup) \
 	do { \
 		if ((nvfs_mgroup) != NULL)  { \
@@ -372,6 +400,7 @@ static int nvfs_blk_rq_map_sg_internal(struct request_queue *q,
 		if (nvfs_mgroup != NULL) {
 			if (nvfs_mgroup_metadata_set_dma_state(bvec.bv_page, nvfs_mgroup, bvec.bv_len, bvec.bv_offset) != 0) {
 				nvfs_err("%s:%d mgroup_set_dma error\n", __func__, __LINE__);
+				CHECK_AND_PUT_MGROUP(nvfs_mgroup);
 				return NVFS_IO_ERR;
 			}
 		}
@@ -1099,7 +1128,9 @@ static int nvfs_map_next_gpu_segment(struct request *req,
 		unsigned long rel_page_index;
 		unsigned long target_page_index;
 		struct page *actual_page = NULL;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
 		struct blk_plug *plug = NULL;
+#endif
 
 		if (page_skip > 0) {
 			/* Calculate relative page index within mgroup */
@@ -1184,12 +1215,15 @@ static int nvfs_map_next_gpu_segment(struct request *req,
 		nvfs_coalesce_gpu_pages(req, req_iter, &segment_len,
 		                        &curr_phys_addr, &gpu_page_index);
 
-		plug = current->plug;
-		current->plug = NULL;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
+		plug = nvfs_hide_current_plug();
+#endif
 		nvfs_dbg("%s: getting DMA mapping for req:%p, bvec.bv_page %p, actual_page %p segment_len=%u, offset %d\n",
 				__func__, req, bvec.bv_page, actual_page, segment_len, bvec.bv_offset);
 		ret = nvfs_get_dma(to_pci_dev(dma_dev), actual_page, &gpu_base_dma, segment_len);
-		current->plug = plug;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
+		nvfs_restore_current_plug(plug);
+#endif
 		if (ret == NVFS_IO_ERR || ret == NVFS_BAD_REQ) {
 			nvfs_err("%s:%d nvfs_get_dma failed (ret=%d) for page=%p\n",
 					__func__, __LINE__, ret, actual_page);
@@ -1342,16 +1376,50 @@ static int nvfs_dma_unmap_page(struct device *device,
 }
 #endif /* HAVE_BLK_RQ_DMA_MAP_ITER_START */
 
+static void nvfs_dma_map_sg_attrs_rollback(struct scatterlist *sglist,
+					   int nents,
+					   int nr_gpu_dma_refs)
+{
+	struct scatterlist *sg = NULL;
+	int i = 0, nr_dropped = 0;
+
+	if (nr_gpu_dma_refs <= 0)
+		return;
+
+	for_each_sg(sglist, sg, nents, i) {
+		int ret;
+
+		if (unlikely(sg == NULL || sg_page(sg) == NULL))
+			continue;
+
+		ret = nvfs_mgroup_put_dma_ref_from_page(sg_page(sg));
+		if (ret > 0) {
+			nr_dropped++;
+			if (nr_dropped == nr_gpu_dma_refs)
+				break;
+		} else if (ret < 0) {
+			nvfs_err("%s:%d failed to roll back dma ref for sg entry %d\n",
+				__func__, __LINE__, i);
+		}
+	}
+
+	if (nr_dropped != nr_gpu_dma_refs)
+		nvfs_err("%s:%d rolled back %d of %d dma refs\n",
+			__func__, __LINE__, nr_dropped, nr_gpu_dma_refs);
+}
+
 static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 	                         struct scatterlist *sglist,
 				 int nents,
 			         enum dma_data_direction dma_dir,
 			         unsigned long attrs, bool nvme)
 {
-	int ret, i = 0, nr_gpu_dma = 0, nr_cpu_dma = 0;
+	int ret, i = 0, nr_gpu_dma = 0, nr_cpu_dma = 0, nr_gpu_dma_refs = 0;
 	void *gpu_base_dma = NULL;
 	struct scatterlist *sg = NULL;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
 	struct blk_plug *plug = NULL;
+#endif
 	nvfs_mgroup_ptr_t nvfs_mgroup = NULL;
 
 	if (unlikely(nents == 0)) {
@@ -1381,17 +1449,29 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
 			 * that the scheduler does add this entry to another list which will be eventually picked up
 			 * by kblockd. This way only one thread would be working on the request at a time.
 			 */
-			plug = current->plug;
-			current->plug = NULL;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
+			plug = nvfs_hide_current_plug();
+#endif
 			ret = nvfs_get_dma(to_pci_dev(device), sg_page(sg), &gpu_base_dma, -1);
-			current->plug = plug;
+#ifdef NVFS_NEEDS_NVME_PLUG_HACK
+			nvfs_restore_current_plug(plug);
+#endif
+			if (ret == 0)
+				nr_gpu_dma_refs++;
 		} else {
 			ret = nvfs_get_dma(to_pci_dev(device), sg_page(sg), &gpu_base_dma, sg->length);
 			if (ret == 0) {
+				nr_gpu_dma_refs++;
 				nvfs_mgroup = nvfs_mgroup_from_page(sg_page(sg));
-				if(nvfs_mgroup == NULL) {
+				if (nvfs_mgroup == NULL) {
 					nvfs_err("%s:%d empty mgroup\n", __func__, __LINE__);
-					return NVFS_IO_ERR;
+					ret = NVFS_IO_ERR;
+					goto map_err;
+				}
+				if (unlikely(IS_ERR(nvfs_mgroup))) {
+					nvfs_err("%s:%d mgroup_get_page error\n", __func__, __LINE__);
+					ret = NVFS_IO_ERR;
+					goto map_err;
 				}
 				// We have dma mapping set up
 				if (nvfs_mgroup_metadata_set_dma_state(sg_page(sg), nvfs_mgroup, sg->length, sg->offset) < 0) {
@@ -1473,6 +1553,8 @@ static int nvfs_dma_map_sg_attrs_internal(struct device *device,
         return nents;
 
 map_err:
+	nvfs_dma_map_sg_attrs_rollback(sglist, (i < nents) ? i + 1 : nents,
+					nr_gpu_dma_refs);
 	return ret;
 }
 

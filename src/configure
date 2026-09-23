@@ -117,11 +117,11 @@ cat > $TEST_C <<EOF
 #include "test.h"
 #include <linux/file.h>
 
+int test(void);
 int test (void)
 {
-	struct fd fd1;
-	struct file* f = fd1.file;
-        return 0;
+     struct fd fd1 = { 0 };
+     return fd1.file != NULL;
 }
 
 EOF
@@ -134,7 +134,7 @@ cat > $TEST_C <<EOF
 
 #include <linux/uaccess.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         access_ok(VERIFY_READ, NULL, 0);
@@ -151,7 +151,7 @@ cat > $TEST_C <<EOF
 
 #include <linux/uaccess.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         access_ok(NULL, 0);
@@ -167,7 +167,7 @@ cat > $TEST_C <<EOF
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	blk_rq_payload_bytes(NULL);
@@ -182,7 +182,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/fs.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 
@@ -200,7 +200,7 @@ cat > $TEST_C <<EOF
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         filemap_range_has_page(NULL, 0, 0);
@@ -216,7 +216,7 @@ cat > $TEST_C <<EOF
 #include <linux/security.h>
 #include <linux/fs.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         security_file_permission(NULL, MAY_READ);
@@ -233,7 +233,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/fs.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         struct kiocb iocb;
@@ -249,12 +249,10 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/mm_types.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
-        vm_fault_t a;
-
-        return 0;
+    return sizeof(vm_fault_t);
 }
 EOF
 if compile_prog "Checking if vm_fault_t exist in mm_types.h... "; then
@@ -264,7 +262,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/pci.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         int x = PCIE_SPEED_32_0GT;
@@ -279,7 +277,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/pci.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         int x = PCIE_SPEED_64_0GT;
@@ -294,7 +292,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/types.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	atomic64_t var;
@@ -310,7 +308,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/blkdev.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	int flags = RQF_COPY_USER;
@@ -324,7 +322,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/blkdev.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct request_queue q;
@@ -340,7 +338,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/proc_fs.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct proc_ops ops;
@@ -355,7 +353,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/mm.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct vm_operations_struct vm_ops;
@@ -369,6 +367,8 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/mm.h>
 #include "test.h"
+int test(void);
+int test_mremap(struct vm_area_struct *area);
 int test_mremap(struct vm_area_struct *area) {
 	return 0;
 }
@@ -386,9 +386,13 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/mm.h>
 #include "test.h"
+int test(void);
+int test_mremap(struct vm_area_struct *area, unsigned long addr);
+
 int test_mremap(struct vm_area_struct *area, unsigned long addr) {
 	return 0;
 }
+
 int test (void)
 {
 	struct vm_operations_struct vm_ops;
@@ -403,7 +407,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/module.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         mutex_lock(&module_mutex);
@@ -418,7 +422,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/blk-integrity.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	blk_integrity_rq(NULL);
@@ -433,7 +437,8 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/fs.h>
 #include "test.h"
-
+int test(void);
+static void check_io_complete(struct kiocb *kiocb, long res, long res2);
 static void check_io_complete(struct kiocb *kiocb, long res, long res2) {
         return; 
 }
@@ -453,7 +458,7 @@ cat > $TEST_C <<EOF
 #include <linux/mm_types.h>
 #include <linux/mm.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct temp {
@@ -470,13 +475,28 @@ if compile_prog "Checking if pin_user_pages_fast symbol is present in kernel or 
 fi
 
 cat > $TEST_C <<EOF
-#include <linux/random.h>
+#include <linux/mm.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
-	unsigned int temp = prandom_u32();
+	struct mm_struct *mm = NULL;
+	mmap_read_lock(mm);
+	mmap_read_unlock(mm);
 	return 0;
+}
+EOF
+if compile_prog "Checking if mmap_read_lock/mmap_read_unlock symbols are present in kernel or not ..."; then
+        output_sym "HAVE_MMAP_READ_LOCK"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/random.h>
+#include "test.h"
+int test(void);
+int test (void)
+{
+	return (int)prandom_u32();
 }
 EOF
 if compile_prog "Checking if prandom_u32 symbol is present in kernel or not ..."; then
@@ -487,15 +507,21 @@ cat > $TEST_C <<EOF
 
 #include "test.h"
 #include <linux/device.h>
+int test(void);
+static char *temp_devnode(struct device *dev, umode_t *mode);
 static char *temp_devnode(struct device *dev, umode_t *mode)
 {
-	return NULL;
+        (void)dev;
+        (void)mode;
+        return NULL;
 }
-int test (void)
+
+int test(void)
 {
-	struct class *temp;
-	temp->devnode = temp_devnode;
-	return 0;
+        struct class temp = { 0 };
+
+        temp.devnode = temp_devnode;
+        return temp.devnode != NULL;
 }
 EOF
 if compile_prog "Checking if devnode in class has doesn't have const device or not ..."; then
@@ -507,6 +533,7 @@ cat > $TEST_C <<EOF
 #include "test.h"
 #include <linux/device.h>
 #include <linux/export.h>
+int test(void);
 int test (void)
 {
     struct class* nvfs_class;
@@ -522,6 +549,7 @@ cat > $TEST_C <<EOF
 
 #include "test.h"
 #include <linux/mm_types.h>
+int test(void);
 int test (void)
 {
     struct vm_area_struct vma;
@@ -536,7 +564,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/blk-mq-pci.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
         return 0;
@@ -550,7 +578,7 @@ fi
 cat > $TEST_C <<EOF
 #include <linux/mm_types.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct page test_page;
@@ -568,7 +596,7 @@ cat > $TEST_C <<EOF
 #include <linux/blk-mq.h>
 #include <linux/blk-mq-dma.h>
 #include "test.h"
-
+int test(void);
 int test (void)
 {
 	struct blk_dma_iter iter;
@@ -587,13 +615,45 @@ if compile_prog "Checking if blk_rq_dma_map_iter_start is present..."; then
         output_sym "HAVE_BLK_RQ_DMA_MAP_ITER_START"
 fi
 
+cat > $TEST_C <<EOF
+#include <linux/version.h>
+#include "test.h"
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0)
+#error "NVMe plug hack is not needed"
+#endif
+
+int test(void);
+int test(void)
+{
+        return 0;
+}
+EOF
+if compile_prog "Checking if NVMe plug hack is needed..."; then
+        output_sym "NVFS_NEEDS_NVME_PLUG_HACK"
+fi
+
+cat > $TEST_C <<EOF
+#include <linux/sched.h>
+#include "test.h"
+
+int test(void);
+int test(void)
+{
+        return PF_BLOCK_TS;
+}
+EOF
+if compile_prog "Checking if PF_BLOCK_TS is present..."; then
+        output_sym "HAVE_PF_BLOCK_TS"
+fi
+
 
 cat > $TEST_C <<EOF
 #include "test.h"
 #include <linux/blkdev.h>
 #include <linux/blk-mq.h>
 #include <linux/blk-mq-dma.h>
-
+int test(void);
 int test(void)
 {
 	struct blk_map_iter iter;
@@ -608,6 +668,7 @@ fi
 cat > $TEST_C <<EOF
 #include "test.h"
 #include <linux/mm_types.h>
+int test(void);
 int test(void)
 {
     struct vm_area_struct *vma = NULL;
@@ -621,6 +682,7 @@ fi
 cat > $TEST_C <<EOF
 #include "test.h"
 #include <linux/mm_types.h>
+int test(void);
 int test(void)
 {
     struct page p;
@@ -633,4 +695,3 @@ fi
 
 echo "#endif" >> $config_host_h
 rm -rf build
-

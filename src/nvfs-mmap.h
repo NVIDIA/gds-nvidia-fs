@@ -26,6 +26,7 @@
 #include <linux/rculist.h>
 #include <linux/device.h>
 #include <linux/log2.h>
+#include <linux/workqueue.h>
 #include "config-host.h"
 #include "nv-p2p.h"
 
@@ -72,10 +73,7 @@ X(1, IO_INIT, INIT) \
 X(2, IO_READY, READY) \
 X(3, IO_IN_PROGRESS, IN_PROGRESS) \
 X(4, IO_TERMINATE_REQ, TERMINATE_REQ) \
-X(5, IO_TERMINATED, TERMINATED) \
-X(6, IO_CALLBACK_REQ, CALLBACK_REQ) \
-X(7, IO_CALLBACK_END, CALLBACK_END) \
-X(8, IO_UNPIN_PAGES_ALREADY_INVOKED, UNPIN_PAGES_ALREADY_INVOKED)
+X(5, IO_TERMINATED, TERMINATED)
 
 
 typedef enum nvfs_io_state {
@@ -108,7 +106,7 @@ typedef struct nvfs_io {
         loff_t fd_offset;               // file offset
         loff_t gpu_page_offset;         // GPU page offset for gpu vaddr
         u64    end_fence_value;         // Value to be set after DMA completion
-        struct fd fd;                   // File descriptor for read/write
+        struct file *file;              // File for read/write
         int op;                         // op type
         bool sync;                      // sync flag
         bool hipri;                     // send IO as hipri
@@ -141,10 +139,8 @@ struct nvfs_gpu_args {
 	u32 offset_in_page;			    // end_fence_addr byte offset in end_fence_page
         atomic_t io_state;                    	    // IO state transitions
         atomic_t dma_mapping_in_progress;	    // Mapping in progress for a specific PCI device
-	atomic_t callback_invoked;
-        wait_queue_head_t callback_wq;              // wait queue for IO completion
+	wait_queue_head_t dma_mapping_wq;           // wait queue for DMA mapping serialization
         bool is_bounce_buffer;			    // is this memory used for bounce buffer
-        bool use_legacy_p2p_allocation;             // Use legacy p2p_get/put_page()
 	int n_phys_chunks;			    // number of contiguous physical address range
         u64 pdevinfo;				    // pci domain(upper 4 bytes), bus, device, function for pci ranking
         unsigned int gpu_hash_index;                // cache gpu hash index for pci rank lookups 
@@ -185,6 +181,7 @@ struct nvfs_io_mgroup {
         struct nvfs_io_metadata *nvfs_metadata;
 	struct nvfs_gpu_args gpu_info;
 	nvfs_io_t nvfsio;
+	struct work_struct mgroup_free_work;
 #ifdef NVFS_ENABLE_KERN_RDMA_SUPPORT
 	struct nvfs_rdma_info 	  rdma_info;
 #endif
@@ -202,12 +199,17 @@ int nvfs_mgroup_mmap(struct file *filp, struct vm_area_struct *vma);
 nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index);
 void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup);
 void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup);
+void nvfs_mgroup_put_async(nvfs_mgroup_ptr_t nvfs_mgroup);
+void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma);
+void nvfs_mgroup_free_work(struct work_struct *work);
+void nvfs_mgroup_queue_free_work(nvfs_mgroup_ptr_t nvfs_mgroup);
 void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_state state, bool validate, bool update_nvfsio);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page(struct page* page);
 nvfs_mgroup_ptr_t nvfs_mgroup_from_page_range(struct page* page, int nblocks, unsigned int start_offset);
 bool nvfs_is_gpu_page(struct page *page);
 unsigned int nvfs_gpu_index(struct page *page);
 int nvfs_check_gpu_page_and_error(struct page *page, unsigned int offset, unsigned int len);
+int nvfs_mgroup_put_dma_ref_from_page(struct page *page);
 unsigned int nvfs_device_priority(struct device *dev, unsigned int gpu_index);
 
 int nvfs_mgroup_fill_mpages(nvfs_mgroup_ptr_t nvfs_mgroup, unsigned nr_blocks);
