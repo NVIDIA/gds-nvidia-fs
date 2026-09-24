@@ -1,0 +1,40 @@
+//
+// nvfs-windows.rc
+// NVIDIA GDS Windows Driver Resource File
+//
+
+#include <windows.h>
+#include <ntverp.h>
+#include "nvfs-vers-win.h"
+
+#define VER_FILETYPE                VFT_DRV
+#define VER_FILESUBTYPE             VFT2_DRV_SYSTEM
+#define VER_FILEDESCRIPTION_STR     "NVIDIA GPUDirect Storage Driver"
+#define VER_INTERNALNAME_STR        "nvfs.sys"
+#define VER_ORIGINALFILENAME_STR    "nvfs.sys"
+
+#undef VER_PRODUCTVERSION
+#define VER_PRODUCTVERSION          NVFS_VERSION_MAJOR_WIN,NVFS_VERSION_MINOR_WIN,NVFS_VERSION_PATCH_WIN,NVFS_VERSION_BUILD_WIN
+
+#undef VER_PRODUCTVERSION_STR
+#define VER_PRODUCTVERSION_STR      NVFS_VERSION_STRING_WIN
+
+#undef VER_FILEVERSION
+#define VER_FILEVERSION             VER_PRODUCTVERSION
+
+#undef VER_FILEVERSION_STR
+#define VER_FILEVERSION_STR         VER_PRODUCTVERSION_STR
+
+#undef VER_COMPANYNAME_STR
+#define VER_COMPANYNAME_STR         "NVIDIA Corporation"
+
+#undef VER_PRODUCTNAME_STR
+#define VER_PRODUCTNAME_STR         "NVIDIA GPUDirect Storage"
+
+#undef VER_LEGALCOPYRIGHT_STR
+#define VER_LEGALCOPYRIGHT_STR      "Copyright (c) 2021-2025 NVIDIA Corporation. All rights reserved."
+
+#include "common.ver"
+
+// Driver manifest for security and compatibility
+1 24 "nvfs-windows.manifest"
