@@ -108,7 +108,7 @@ nv_configure:
 nv_symbols:
 	@ echo "Picking NVIDIA driver sources from NVIDIA_SRC_DIR=$(NVIDIA_SRC_DIR). If that does not meet your expectation, you might have a stale driver still around and that might cause problems."
 	@ chmod +x ./create_nv.symvers.sh
-	@ ./create_nv.symvers.sh
+	@ ./create_nv.symvers.sh $(KVER) $(KDIR)
 	@ cat nv.symvers >> Module.symvers
 
 module: nv_symbols nv_configure

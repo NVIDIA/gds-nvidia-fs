@@ -231,7 +231,10 @@ int test (void)
 }
 
 EOF
-if grep -w "__kstrtab_security_file_permission" /boot/System.map-${KVER} >> /dev/null 2>&1 && \
+# /boot/System.map-${KVER} is absent when building against kernel headers only
+# (e.g. a package build chroot), so also consult the headers' Module.symvers.
+if { grep -w "__kstrtab_security_file_permission" /boot/System.map-${KVER} >> /dev/null 2>&1 || \
+	grep -qw "security_file_permission" ${KDIR}/Module.symvers 2>/dev/null; } && \
 	compile_prog "Checking if security_file_permission API exist..."; then
         output_sym "HAVE_SECURITY_FILE_PERMISSION"
 fi
