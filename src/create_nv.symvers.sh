@@ -29,6 +29,8 @@ SCRIPTPATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
 
 MOD_SYMVERS=${SCRIPTPATH}/nv.symvers
 KVER=${1:-$(uname -r)}
+KDIR=${2:-/lib/modules/$KVER/build}
+compiled_nv_sources=0
 
 # Create empty symvers file
 echo -n "" > $MOD_SYMVERS
@@ -49,6 +51,7 @@ try_compile_nvidia_sources()
 	echo
 	echo "Attempting to compile nvidia from $nv_sources sources to build Module.symvers..."
 	echo
+	compiled_nv_sources=1
 	local tmpdir=`mktemp -d /tmp/nv.XXXXXX`
 	if [ ! -d "$tmpdir" ]; then
 		echo "-E- Failed to create a temp directory!" >&2
@@ -56,11 +59,11 @@ try_compile_nvidia_sources()
 	fi
 	/bin/cp -a $nv_sources $tmpdir
 	cd $tmpdir/*
-	make -j8 NV_EXCLUDE_BUILD_MODULES='' KERNEL_UNAME=$KVER clean
+	make -j8 NV_EXCLUDE_BUILD_MODULES='' KERNEL_UNAME=$KVER SYSSRC=$KDIR SYSOUT=$KDIR clean
 	if [ $? -ne 0 ]; then
 		return
 	fi
-	make -j8 NV_EXCLUDE_BUILD_MODULES='' KERNEL_UNAME=$KVER modules
+	make -j8 NV_EXCLUDE_BUILD_MODULES='' KERNEL_UNAME=$KVER SYSSRC=$KDIR SYSOUT=$KDIR modules
 	if [ $? -ne 0 ]; then
 		return
 	fi
@@ -139,7 +142,13 @@ do
 	exit 0
 done
 
-if [ ! -e "$nvidia_mod" ]; then
+# No usable built nvidia module (e.g. a package build chroot that only has the
+# nvidia sources installed): build the nvidia sources against $KDIR instead.
+if [ ! -s "$MOD_SYMVERS" ] && [ "$compiled_nv_sources" = 0 ]; then
+	try_compile_nvidia_sources nvidia
+fi
+
+if [ ! -e "$nvidia_mod" ] && [ ! -s "$MOD_SYMVERS" ]; then
 	echo "-E- Cannot locate nvidia modules!" >&2
 	echo "CUDA driver must be installed before installing this package!" >&2
 fi
