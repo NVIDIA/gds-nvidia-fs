@@ -173,18 +173,6 @@ static int nvfs_stats_show(struct seq_file *m, void *v) {
 			nvfs_major_version(nvfs_driver_version()),
 			nvfs_minor_version(nvfs_driver_version()),
 			NVFS_DRIVER_PATCH_VERSION);
-#ifdef GDS_DMABUF_SUPPORTED 
-        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "True");
-#else
-        {
-                struct path path;
-                int ret = kern_path("/sys/kernel/mm/memory_peers/nv_mem/version", LOOKUP_FOLLOW, &path);
-                if(ret)
-                        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "False");
-                else
-                        seq_printf(m, "Mellanox PeerDirect Supported: %s\n", "True");
-        }
-#endif
         seq_printf(m, "IO stats: %s, peer IO stats: %s\n",
                    nvfs_rw_stats_enabled ? "Enabled" : "Disabled",
                    nvfs_peer_stats_enabled ? "Enabled" : "Disabled");

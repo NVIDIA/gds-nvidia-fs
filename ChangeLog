@@ -1,3 +1,8 @@
+nvidia-fs (2.31.5) RELEASE; urgency=low
+  * Remove NVMe plug hack for > 6.5 kernels
+  * Fixes to configure script for compilation on Oracle kernels
+  * Security bug fixes
+  * Other minor bug fixes
 nvidia-fs (2.30.2) RELEASE; urgency=low
   * Add support for PANFS
   * Minor bug fixes

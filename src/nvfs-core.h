@@ -214,7 +214,7 @@ void nvfs_io_unmap_sparse_data(nvfs_io_sparse_dptr_t ptr, nvfs_metastate_enum st
 int nvfs_get_dma(void *, struct page *, void **, int );
 
 bool nvfs_free_gpu_info(struct nvfs_gpu_args* gpu_info, bool from_dma);
-bool nvfs_io_terminate_requested(struct nvfs_gpu_args *gpu_info, bool);
+bool nvfs_io_terminate_requested(struct nvfs_gpu_args *gpu_info);
 void nvfs_io_process_exiting(nvfs_mgroup_ptr_t nvfs_mgroup);
 
 #define NVFS_MAGIC 't'
@@ -279,4 +279,3 @@ int nvfs_proc_init(void);
 void nvfs_proc_cleanup(void);
 
 #endif /* NVFS_CORE_H */
-

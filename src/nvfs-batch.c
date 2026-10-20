@@ -156,6 +156,7 @@ long nvfs_io_batch_submit(nvfs_batch_io_t *nvfs_batch)
                         nvfs_batch->nvfsio[i] = NULL;
                         goto cleanup;
                 }
+                nvfs_batch->nvfsio[i] = NULL;
 	 }
 
 	 nvfs_update_batch_latency(ktime_us_delta(ktime_get(),

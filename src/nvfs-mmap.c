@@ -94,6 +94,11 @@ void nvfs_mgroup_get_ref(nvfs_mgroup_ptr_t mgroup)
 	atomic_inc(&mgroup->ref);
 }
 
+static bool nvfs_mgroup_try_get_ref(nvfs_mgroup_ptr_t mgroup)
+{
+	return atomic_inc_not_zero(&mgroup->ref);
+}
+
 bool nvfs_mgroup_put_ref(nvfs_mgroup_ptr_t mgroup)
 {
 	return atomic_dec_and_test(&mgroup->ref);
@@ -109,8 +114,13 @@ static inline nvfs_mgroup_ptr_t nvfs_mgroup_get_unlocked(unsigned long base_inde
         {
                 if(nvfs_mgroup->base_index == base_index) {
 			// If the backing buffer is released, there
-			// is no point in bumping the reference. Any new
-			// IO should never get hold of nvfs_mgroup
+			// is no point in bumping the reference.
+			if (!nvfs_mgroup_try_get_ref(nvfs_mgroup)) {
+				nvfs_dbg("base_index %lx found with zero ref\n",
+						base_index);
+				return NULL;
+			}
+
 			gpu_info = &nvfs_mgroup->gpu_info;
 			if (unlikely(atomic_read(&gpu_info->io_state) >
 			        IO_IN_PROGRESS)) {
@@ -122,12 +132,24 @@ static inline nvfs_mgroup_ptr_t nvfs_mgroup_get_unlocked(unsigned long base_inde
 
                         //nvfs_dbg("base_index %lx (ref:%d) found \n",
 			//	base_index, atomic_read(&nvfs_mgroup->ref));
-			nvfs_mgroup_get_ref(nvfs_mgroup);
                         return nvfs_mgroup;
                 }
         }
         nvfs_dbg("base_index %lx not found \n", base_index);
         return NULL;
+}
+
+static inline bool nvfs_mgroup_base_index_exists_unlocked(unsigned long base_index)
+{
+	nvfs_mgroup_ptr_t nvfs_mgroup;
+
+	hash_for_each_possible_rcu(nvfs_io_mgroup_hash,
+			nvfs_mgroup, hash_link, base_index) {
+		if (nvfs_mgroup->base_index == base_index)
+			return true;
+	}
+
+	return false;
 }
 
 nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index)
@@ -140,7 +162,7 @@ nvfs_mgroup_ptr_t nvfs_mgroup_get(unsigned long base_index)
         return nvfs_mgroup;
 }
 
-static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
+void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
 {
         int i;
       	struct nvfs_gpu_args *gpu_info = NULL;
@@ -197,7 +219,8 @@ static void nvfs_mgroup_free(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
 /*
 void nvfs_mgroup_put_callback(nvfs_mgroup_ptr_t nvfs_mgroup)
 */
-static void nvfs_mgroup_put_internal(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dma)
+static void nvfs_mgroup_put_internal(nvfs_mgroup_ptr_t nvfs_mgroup,
+		bool from_dma, bool from_async)
 {
         if(nvfs_mgroup == NULL)
                 return;
@@ -205,39 +228,25 @@ static void nvfs_mgroup_put_internal(nvfs_mgroup_ptr_t nvfs_mgroup, bool from_dm
 			atomic_read(&nvfs_mgroup->ref));
 
         if(nvfs_mgroup_put_ref(nvfs_mgroup)) {
-		/* The nvidia_p2p_put_pages is only allowed from the 
-		 * same process context as the nvidia_p2p_get_pages*.
-		 * So here we are checking if the nvfs_mgroup_put() is called
-		 * from the process conext or not and if not then atleast it should 
-		 * be called from the nvfs_get_pages_free_callback which indicates that 
-		 * the GPU memory and it's mapping are being freed in the kernel
-		 */
-#if 0
-                if(nvfs_check_process_context() || 
-				atomic_read(&nvfs_mgroup->gpu_info.io_state) == IO_CALLBACK_END) {
-			nvfs_dbg("Freeing mgroup %p\n", nvfs_mgroup);
-			nvfs_mgroup_free(nvfs_mgroup);
-		} else {
-			//Dake the ref back othe mgroup, for it to be eventually freed by the callback.
-			nvfs_dbg("Ignoring free from async context and taking \
-					back the dropped reference for mgroup %p\n", (void*) nvfs_mgroup);
-			//Add mgroup to a list or mark the mgroup for deffered completion
-			//nvfs_mgroup->deffered_free = 1;
-			nvfs_stat64(&nvfs_n_delayed_frees);
-			nvfs_mgroup_get_ref(nvfs_mgroup);
+		if ((from_async || from_dma) && unlikely(!NVFS_MAY_SLEEP())) {
+			nvfs_mgroup_queue_free_work(nvfs_mgroup);
+			return;
 		}
-#else
+
 		nvfs_mgroup_free(nvfs_mgroup, from_dma);
-#endif
-        }
+	}
 }
 
 void nvfs_mgroup_put(nvfs_mgroup_ptr_t nvfs_mgroup) {
-	return nvfs_mgroup_put_internal(nvfs_mgroup, false);
+	return nvfs_mgroup_put_internal(nvfs_mgroup, false, false);
 }
 
 void nvfs_mgroup_put_dma(nvfs_mgroup_ptr_t nvfs_mgroup) {
-	return nvfs_mgroup_put_internal(nvfs_mgroup, true);
+	return nvfs_mgroup_put_internal(nvfs_mgroup, true, false);
+}
+
+void nvfs_mgroup_put_async(nvfs_mgroup_ptr_t nvfs_mgroup) {
+	return nvfs_mgroup_put_internal(nvfs_mgroup, false, true);
 }
 
 static nvfs_mgroup_ptr_t nvfs_get_mgroup_from_vaddr_internal(u64 cpuvaddr)
@@ -490,8 +499,6 @@ nvfs_mgroup_ptr_t nvfs_mgroup_pin_shadow_pages(u64 cpuvaddr, unsigned long lengt
 		ret = pinned;
 		goto failed_pinned;
 	}
-	nvfs_mgroup->cpu_base_vaddr = cpuvaddr;
-        nvfs_mgroup_check_and_set(nvfs_mgroup, NVFS_IO_INIT, true, false);
 	kfree(pages);
 	return nvfs_mgroup;
 
@@ -537,9 +544,8 @@ void nvfs_mgroup_unpin_shadow_pages(nvfs_mgroup_ptr_t nvfs_mgroup)
 
 static int nvfs_vma_split(struct vm_area_struct *vma, unsigned long addr)
 {
-	nvfs_err("ERR: Attempted VMA split, virt %lx, vm_pg_off:%lx  split_start %lx\n",
+	nvfs_err("Rejecting VMA split, virt %lx, vm_pg_off:%lx split_start %lx\n",
 			vma->vm_start, vma->vm_pgoff, addr);
-        WARN_ON_ONCE(1);
         return -ENOMEM;
 }
 #ifdef HAVE_VM_OPS_MREMAP_ONE_PARAM
@@ -549,9 +555,8 @@ static int nvfs_vma_mremap(struct vm_area_struct *vma)
 static int nvfs_vma_mremap(struct vm_area_struct *vma, unsigned long flags)
 #endif
 {
-	nvfs_err("ERR: Attempted VMA remap, virt %lx, vm_pg_off:%lx\n",
+	nvfs_err("Rejecting VMA remap, virt %lx, vm_pg_off:%lx\n",
 			vma->vm_start, vma->vm_pgoff);
-        WARN_ON_ONCE(1);
         return -ENOMEM;
 }
 
@@ -560,33 +565,25 @@ static void nvfs_vma_open(struct vm_area_struct *vma)
 {
 
         vma->vm_private_data = NULL;
-	nvfs_err("ERR: NVFS VMA open, virt %lx, vm_pg_off %lx\n",
+	nvfs_err("NVFS VMA open, virt %lx, vm_pg_off %lx\n",
 			vma->vm_start, vma->vm_pgoff);
-        WARN_ON_ONCE(1);
 }
 
 static void nvfs_vma_close(struct vm_area_struct *vma)
 {
         nvfs_mgroup_ptr_t nvfs_mgroup;
-	bool callback_invoked = false;
 #ifdef CONFIG_NVFS_STATS
 	unsigned long length = vma->vm_end - vma->vm_start;
 #endif
         if (vma->vm_private_data != NULL) {
 		struct nvfs_gpu_args *gpu_info;
+		bool release_shadow_ref;
 
                 nvfs_mgroup = (nvfs_mgroup_ptr_t)vma->vm_private_data;
 		gpu_info = &nvfs_mgroup->gpu_info;
 
 		nvfs_dbg("NVFS VMA close vma:%p nvfs_mgroup %p\n", vma, nvfs_mgroup);
 		if (atomic_read(&gpu_info->io_state) > IO_INIT) {
-			// cudaFree was already invoked and hence callback was done
-			if(atomic_read(&gpu_info->io_state) == IO_CALLBACK_END) {
-				nvfs_dbg("%s:%d Callback was already invoked.. ref=%d\n",
-					__func__, __LINE__,
-					atomic_read(&nvfs_mgroup->ref));
-				callback_invoked = true;
-			}
 
 #ifdef CONFIG_FAULT_INJECTION
 				if (nvfs_mgroup->fault_injected) {
@@ -595,25 +592,20 @@ static void nvfs_vma_close(struct vm_area_struct *vma)
 					goto done;
 				}
 #endif
-			if (callback_invoked) {
+			// We don't wait for the IO to terminate as we cannot
+			// sleep in this function. We will just mark the
+			// IO to IO_TERMINATE_REQ and move on; the last
+			// reference on nvfs_mgroup will ensure cleaning up
+			// the structure
+			release_shadow_ref = nvfs_io_terminate_requested(gpu_info);
+			if (!release_shadow_ref) {
 				goto done;
-			} else {
-				// We don't wait for the IO to terminate as we cannot
-				// sleep in this function. We will just mark the
-				// IO to IO_TERMINATE_REQ and move on; the last
-				// reference on nvfs_mgroup will ensure cleaning up
-				// the structure
-				(void)nvfs_io_terminate_requested(gpu_info, false);	
-                                // free the memory only if sucessfully terminated by vma_close
-			        if(atomic_read(&gpu_info->io_state) != IO_TERMINATED) {
-                                        goto done;
-                                }
 			}
 
 			nvfs_dbg("munmap invoked - IO state %s %d %d\n",
-				nvfs_io_state_status(atomic_read(&gpu_info->io_state)), 
-						     atomic_read(&gpu_info->io_state),
-						     IO_TERMINATED);
+			nvfs_io_state_status(atomic_read(&gpu_info->io_state)), 
+					     atomic_read(&gpu_info->io_state),
+					     IO_TERMINATED);
 
 			if (atomic_read(&gpu_info->io_state) == IO_TERMINATED){
 				// We should have atmost 3 references
@@ -653,22 +645,19 @@ clear_vma:
 static nvfs_vma_fault_t nvfs_vma_fault(struct vm_fault *vmf)
 {
         nvfs_err("ERR: NVFS VMA fault: %p , vmf:%p .\n", vmf->vma, vmf);
-        WARN_ON_ONCE(1);
-        return 0;
+        return VM_FAULT_SIGBUS;
 }
 
 static nvfs_vma_fault_t nvfs_page_mkwrite(struct vm_fault *vmf)
 {
         nvfs_err("ERR: VMA pg_mkwrite: %p vmf:%p .\n", vmf->vma, vmf);
-        WARN_ON_ONCE(1);
-        return 0;
+        return VM_FAULT_SIGBUS;
 }
 
 static nvfs_vma_fault_t nvfs_pfn_mkwrite(struct vm_fault *vmf)
 {
         nvfs_err("ERR: VMA pfn_mkwrite: %p vmf:%p .\n", vmf->vma, vmf);
-        WARN_ON_ONCE(1);
-        return 0;
+        return VM_FAULT_SIGBUS;
 }
 
 static const struct vm_operations_struct nvfs_mmap_ops = {
@@ -755,7 +744,8 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
         	goto error;
         }
 	gpu_info = &nvfs_new_mgroup->gpu_info;
-	init_waitqueue_head(&gpu_info->callback_wq);
+	INIT_WORK(&nvfs_new_mgroup->mgroup_free_work,
+			nvfs_mgroup_free_work);
 
         /* allocate a base index for the group starting from NVFS_MIN_BASE_INDEX
          * to next 2^32 entries. prandom_u32 makes sure the hash table collisions
@@ -770,9 +760,8 @@ static int nvfs_mgroup_mmap_internal(struct file *filp, struct vm_area_struct *v
 #else
                 base_index = NVFS_MIN_BASE_INDEX + (unsigned long)get_random_u32();
 #endif
-		nvfs_mgroup = nvfs_mgroup_get_unlocked(base_index);
-                if (unlikely(nvfs_mgroup && tries--)) {
-                        nvfs_mgroup_put(nvfs_mgroup);
+                if (unlikely(nvfs_mgroup_base_index_exists_unlocked(base_index) && tries--)) {
+                        continue;
                 } else {
                         nvfs_new_mgroup->base_index = base_index;
                         atomic_set(&nvfs_new_mgroup->ref,1);
@@ -1015,8 +1004,8 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 								}
 							} else {
 								sparse_ptr->hole[nholes].npages++;
-							last_sparse_index = i;
-						}
+								last_sparse_index = i;
+							}
 					} else {
 						//WARN_ON(validate && nvfs_mpages[i].nvfs_state != NVFS_IO_DMA_START);
 						nvfs_dbg("WRITE: block index: %d, expected NVFS_IO_DMA_START,"
@@ -1064,19 +1053,29 @@ void nvfs_mgroup_check_and_set(nvfs_mgroup_ptr_t nvfs_mgroup, enum nvfs_block_st
 
         // unmap the sparse ptr
         if(sparse_ptr) {
-                nvfs_metastate_enum state;
-               //update the nholes, state to the user structure.
-                sparse_ptr->nholes = (nholes + 1);
-                state = sparse_ptr->nholes ? NVFS_IO_META_SPARSE : NVFS_IO_META_CLEAN;
-                nvfsio->state = state;
+                nvfs_metastate_enum metadata_state;
+                int n_sparse_holes = nholes + 1;
+
+                /*
+                 * sparse_ptr points into the user supplied end-fence page. Once
+                 * the count is published, userspace can race writes into that
+                 * page, so use n_sparse_holes for metadata state, sparse-region
+                 * stats, and loop control. The per-hole page-count stat below is
+                 * best-effort accounting and does not drive memory access bounds.
+                 */
+                sparse_ptr->nholes = n_sparse_holes;
+                metadata_state = n_sparse_holes ?
+                        NVFS_IO_META_SPARSE : NVFS_IO_META_CLEAN;
+                nvfsio->state = metadata_state;
                 sparse_ptr->start_fd_offset = nvfsio->fd_offset;
-                nvfs_dbg("found: %d holes at fd start_offset %lld \n", sparse_ptr->nholes, sparse_ptr->start_fd_offset);
-		nvfs_stat64_add(sparse_ptr->nholes, &nvfs_n_reads_sparse_region);
-                for(i=0;i<sparse_ptr->nholes;i++) {
-		        nvfs_stat64_add(sparse_ptr->hole[i].npages, &nvfs_n_reads_sparse_pages);
+                nvfs_dbg("found: %d holes at fd start_offset %lld \n",
+                        n_sparse_holes, nvfsio->fd_offset);
+                nvfs_stat64_add(n_sparse_holes, &nvfs_n_reads_sparse_region);
+                for(i=0;i<n_sparse_holes;i++) {
+                        nvfs_stat64_add(sparse_ptr->hole[i].npages, &nvfs_n_reads_sparse_pages);
                         nvfs_dbg("Hole: start:%d npages: %d \n",sparse_ptr->hole[i].start, sparse_ptr->hole[i].npages);
                 }
-                nvfs_io_unmap_sparse_data(sparse_ptr, state);
+                nvfs_io_unmap_sparse_data(sparse_ptr, metadata_state);
                 sparse_ptr = NULL;
         }
 
@@ -1381,7 +1380,6 @@ int nvfs_mgroup_metadata_set_dma_state(struct page* page,
 		        nvfs_err("%s: found page in wrong state: %d, page->index: %ld at block: %d len: %u and offset: %u\n",
                                         __func__, nvfs_mpage->nvfs_state, NVFS_PAGE_INDEX(page) % NVFS_MAX_SHADOW_PAGES, i, bv_len, bv_offset);		
 			nvfs_mpage->nvfs_state = NVFS_IO_DMA_ERROR;
-			nvfs_mgroup_put(nvfs_mgroup);
 			WARN_ON_ONCE(1);
 			return (-EIO);
 		}
@@ -1485,6 +1483,36 @@ int nvfs_check_gpu_page_and_error(struct page *page, unsigned int offset, unsign
                 nvfs_mgroup_put_dma(nvfs_mgroup);
                 return 1;
 	}
+}
+
+int nvfs_mgroup_put_dma_ref_from_page(struct page *page)
+{
+	unsigned long base_index;
+	nvfs_mgroup_ptr_t nvfs_mgroup;
+
+	if (page == NULL || page->mapping != NULL)
+		return 0;
+
+	base_index = NVFS_PAGE_INDEX(page) >> NVFS_MAX_SHADOW_PAGES_ORDER;
+	if (base_index < NVFS_MIN_BASE_INDEX)
+		return 0;
+
+	nvfs_mgroup = nvfs_mgroup_get(base_index);
+	if (nvfs_mgroup == NULL)
+		return 0;
+
+	if (unlikely(IS_ERR(nvfs_mgroup)))
+		return -EIO;
+
+	if (atomic_dec_if_positive(&nvfs_mgroup->dma_ref) < 0) {
+		nvfs_stat_d(&nvfs_n_err_dma_ref);
+		nvfs_mgroup_put_dma(nvfs_mgroup);
+		return -EIO;
+	}
+
+	nvfs_mgroup_put_dma(nvfs_mgroup);
+	nvfs_mgroup_put_dma(nvfs_mgroup);
+	return 1;
 }
 
 /* Description      : get gpu index key given a GPU page.
